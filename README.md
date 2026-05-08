@@ -2,7 +2,7 @@
 
 Shared build glue for using [Velopack](https://velopack.io) from Zig projects. It wraps the prebuilt Velopack C-ABI archives and helps wire **linking**, **Linux `mksquashfs`**, and **MSVC toolchain bootstrap** for `*-windows-msvc` cross-compiles.
 
-The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and `squashfs-tools` source as its own `build.zig.zon` dependencies, so consumers do not need to declare either themselves.
+The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and a Zig-built `mksquashfs` (upstream squashfs-tools + zlib, same commit as before) as its own `build.zig.zon` dependencies, so consumers do not need to declare those themselves.
 
 ## Add this package to your project (`build.zig.zon` + `zig fetch`)
 
@@ -16,7 +16,7 @@ The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and
 
 - **`linkVelopack(b, exe, .{ .target = target })`** — Adds the `Velopack.h` include path, picks the correct prebuilt static library for the resolved target, links Winsock + BCrypt on Windows, and sets `$ORIGIN` / `@loader_path` rpath on Linux / macOS. For `*-windows-msvc` it copies the `.lib` into a writable dir and trims Velopack’s bundled Rust `compiler_builtins-*` members (which would otherwise collide with Zig’s `compiler_rt`). Trimming uses `zig ar` from the Zig toolchain; no separate LLVM install is required.
 
-- **`buildMksquashfs(b)`** — Builds `mksquashfs` from the bundled `squashfs-tools` tree (`make` on the **host**). Returns a step and `bin_dir` to put on `PATH` when running `vpk pack` for **Linux** (AppImage flow). Returns `null` if the lazy dependency was not activated.
+- **`buildMksquashfs(b)`** — Builds `mksquashfs` with Zig (C compilation + bundled zlib) on **Linux hosts only**; returns `null` on macOS/Windows (Velopack does not need squashfs there). Returns a step and `bin_dir` (under the consumer install prefix) for `PATH` when running `vpk pack` for **Linux** (AppImage flow). Returns `null` if the lazy dependency was not activated. **Cross-packaging a Linux AppImage from a non-Linux host** requires putting a suitable `mksquashfs` on `PATH` yourself (CI Linux runner, container, etc.).
 
 - **`addMsvcupSetupStep(b, install_dir)`** — Runs [msvcup](https://github.com/marler8997/msvcup) (via bundled scripts) to install MSVC + Windows SDK into a writable directory under the **project root** and emits Zig `--libc` manifests (`zig-libc-x64.ini`, `zig-libc-arm64.ini`).  
   - Pass `null` for `install_dir` to use `<build_root>/velopack-msvc`.  
@@ -36,7 +36,6 @@ Velopack’s Windows prebuilt is **MSVC**. Use `x86_64-windows-msvc` or `aarch64
 |-------------|------|
 | **Zig 0.15.2** | Always (see `minimum_zig_version`). |
 | **[.NET SDK](https://dotnet.microsoft.com/download)** | Whenever you run **`vpk`** for packaging (`dotnet tool` / global `vpk`). Velopack’s CLI is distributed as a .NET tool; **`dotnet` is required for packaging, not for `linkVelopack` alone**. |
-| **`make`** (build host) | When you call **`buildMksquashfs`** (Linux packaging). Uses `/usr/bin/make` in the bundled step. |
 | **Xcode / CLT** (codesign, `notarytool`) | macOS **signed** / **notarized** releases only. |
 | **Apple Developer Program** | Distribution signing + notarization. |
 
@@ -49,7 +48,7 @@ Set `DOTNET_ROLL_FORWARD=Major` when running `vpk` if you use a newer runtime th
 1. **Build** your app for the intended target (`zig build …` with the right `-Dtarget=…`).
 2. **Install** or stage the built executable so `vpk` can see a directory containing the app binary and assets (Velopack expects a “pack dir”; layout depends on your integration).
 3. Run **`vpk pack`** (via `dotnet vpk pack …`) with `--packId`, `--packVersion`, `--mainExe`, `--packDir`, `--outputDir`, etc.
-4. **Linux only:** ensure `mksquashfs` is on `PATH` — use `buildMksquashfs` and `Run.addPathDir(sq.bin_dir)` on the same step that invokes `vpk` (see example below).
+4. **Linux AppImage / `mksquashfs`:** on a **Linux** build host, use `buildMksquashfs` and `Run.addPathDir(sq.bin_dir)` on the same step that invokes `vpk` (see example below). From macOS/Windows hosts, ensure a compatible `mksquashfs` is on `PATH` yourself (for example run packaging on a Linux CI job).
 5. **Cross-OS packaging from one machine:** when the **host OS ≠ package OS**, `vpk` needs an OS selector prefix, e.g. `vpk [win] pack …`, `vpk [linux] pack …`, `vpk [osx] pack …`, because it otherwise infers the platform from the host.
 
 `velopack-zig` does **not** invoke `vpk` for you; your `build.zig` (or shell scripts / CI) wires the `Run` step. This keeps signing secrets and product-specific flags in **your** project.

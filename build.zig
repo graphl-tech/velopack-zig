@@ -16,9 +16,13 @@
 //!   const msvcup_step = b.step("msvcup-setup", "...");
 //!   msvcup_step.dependOn(&msvcup.step);
 //!
-//! The library bundles the Velopack release zip and squashfs-tools source
-//! as its own zon dependencies, so consumer projects do not need to declare
-//! either themselves.
+//! The library bundles the Velopack release zip and a Zig build of
+//! mksquashfs (upstream squashfs-tools + zlib) as its own zon dependencies,
+//! so consumer projects do not need to declare them themselves.
+//!
+//! **Linux host only** for `buildMksquashfs`: mksquashfs is built with the Zig
+//! toolchain (no `make`). On other hosts this returns `null`; put a host
+//! `mksquashfs` on `PATH` yourself if you run `vpk pack` for Linux from there.
 //!
 //! Targets **Zig 0.15.2** on `main`.
 
@@ -137,8 +141,9 @@ pub fn linkVelopack(
 }
 
 // ---------------------------------------------------------------------------
-// buildMksquashfs — build mksquashfs from the bundled squashfs-tools source
-// and return its bin dir for vpk pack's PATH (Linux AppImage step).
+// buildMksquashfs — build mksquashfs via the bundled Zig squashfs package
+// (upstream squashfs-tools + zlib) and return its bin dir for vpk pack's PATH.
+// Linux host only; returns null otherwise.
 // ---------------------------------------------------------------------------
 
 pub const MksquashfsBuild = struct {
@@ -150,37 +155,22 @@ pub const MksquashfsBuild = struct {
 
 pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
     const own = ownBuilder(b);
-    const dep = own.lazyDependency("squashfs-tools", .{
+    if (own.graph.host.result.os.tag == .windows)
+        return null;
+
+    const dep = own.lazyDependency("squashfs", .{
         .target = own.graph.host,
         .optimize = .ReleaseFast,
     }) orelse return null;
 
-    // `make clean` is fast and avoids stale objects across runs. Disable the
-    // optional compressors whose dev headers are not installed by default on
-    // macOS; gzip is built into the toolchain.
-    const make_clean = b.addSystemCommand(&.{ "/usr/bin/make", "clean" });
-    make_clean.setCwd(dep.path("squashfs-tools"));
-
-    const make_build = b.addSystemCommand(&.{
-        "/usr/bin/make",
-        "CONFIG=1",
-        "GZIP_SUPPORT=1",
-        "COMP_DEFAULT=gzip",
-        "XZ_SUPPORT=0",
-        "LZO_SUPPORT=0",
-        "LZ4_SUPPORT=0",
-        "ZSTD_SUPPORT=0",
+    const mksquashfs_art = dep.artifact("mksquashfs");
+    const install_mksquashfs = b.addInstallArtifact(mksquashfs_art, .{
+        .dest_dir = .{ .override = .{ .custom = "velopack-mksquashfs" } },
     });
-    make_build.setCwd(dep.path("squashfs-tools"));
-    make_build.step.dependOn(&make_clean.step);
-
-    // Resolve the source-tree path now so consumers can `addPathDir` it.
-    // (`Run.addPathDir` does not take a LazyPath in 0.15.x.)
-    const bin_dir = dep.path("squashfs-tools").getPath3(b, &make_build.step).toString(b.allocator) catch |e| std.debug.panic("velopack-zig: resolve squashfs-tools path: {}", .{e});
 
     return MksquashfsBuild{
-        .step = &make_build.step,
-        .bin_dir = bin_dir,
+        .step = &install_mksquashfs.step,
+        .bin_dir = b.getInstallPath(.{ .custom = "velopack-mksquashfs" }, ""),
     };
 }
 
