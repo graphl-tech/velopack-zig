@@ -20,11 +20,10 @@
 //! mksquashfs (upstream squashfs-tools + zlib) as its own zon dependencies,
 //! so consumer projects do not need to declare them themselves.
 //!
-//! **Linux host only** for `buildMksquashfs`: mksquashfs is built with the Zig
-//! toolchain (no `make`). On other hosts this returns `null`; put a host
-//! `mksquashfs` on `PATH` yourself if you run `vpk pack` for Linux from there.
+//! **Linux build host only** for `buildMksquashfs`: resolves the lazy squashfs
+//! dependency, builds mksquashfs with Zig, and returns install step + bin dir.
 //!
-//! Targets **Zig 0.15.2** on `main`.
+//! Targets **Zig 0.16.0** on `main`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -190,6 +189,8 @@ pub const MksquashfsBuild = struct {
 /// a host `mksquashfs` if one is on `PATH`.
 pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
     const own = ownBuilder(b);
+    // Upstream squashfs-tools + this Zig build only target Linux; skip before
+    // lazyDependency so normal dev builds on macOS/Windows never fetch/build it.
     if (own.graph.host.result.os.tag == .windows)
         return null;
 
@@ -325,7 +326,7 @@ pub fn resolveWindowsMsvcLibc(
     const rel = b.fmt("{s}/zig-libc-{s}.ini", .{ opts.install_dir_name, arch_suffix });
 
     const exists = blk: {
-        b.build_root.handle.access(rel, .{}) catch break :blk false;
+        b.build_root.handle.access(b.graph.io, rel, .{}) catch break :blk false;
         break :blk true;
     };
 

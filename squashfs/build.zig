@@ -118,9 +118,9 @@ pub fn build(b: *std.Build) void {
         });
     }
     mksquashfs.root_module.addIncludePath(upstream.path("squashfs-tools"));
-    mksquashfs.linkLibrary(zlib_dep.artifact("z"));
-    mksquashfs.linkSystemLibrary("pthread");
-    mksquashfs.linkSystemLibrary("m");
+    mksquashfs.root_module.linkLibrary(zlib_dep.artifact("z"));
+    mksquashfs.root_module.linkSystemLibrary("pthread", .{});
+    mksquashfs.root_module.linkSystemLibrary("m", .{});
     b.installArtifact(mksquashfs);
 
     const unsquashfs = b.addExecutable(.{
@@ -145,8 +145,8 @@ pub fn build(b: *std.Build) void {
         });
     }
     unsquashfs.root_module.addIncludePath(upstream.path("squashfs-tools"));
-    unsquashfs.linkLibrary(zlib_dep.artifact("z"));
-    unsquashfs.linkSystemLibrary("pthread");
-    unsquashfs.linkSystemLibrary("m");
+    unsquashfs.root_module.linkLibrary(zlib_dep.artifact("z"));
+    unsquashfs.root_module.linkSystemLibrary("pthread", .{});
+    unsquashfs.root_module.linkSystemLibrary("m", .{});
     b.installArtifact(unsquashfs);
 }

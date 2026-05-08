@@ -1,7 +1,8 @@
 .{
     .name = .squashfs,
     .version = "4.7.5",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.2",
+    .fingerprint = 0x37ba294775ed9cd2,
     .dependencies = .{
         .squashfs_tools = .{
             .url = "git+https://github.com/plougher/squashfs-tools?ref=master#55381b3c75812d7856518a5843502185db22e98e",
