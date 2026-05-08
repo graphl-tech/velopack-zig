@@ -1,0 +1,35 @@
+.{
+    .name = .velopack_zig,
+
+    // Wraps the prebuilt Velopack C-ABI archives published at
+    // https://github.com/velopack/velopack/releases plus the squashfs-tools
+    // sources needed by `vpk pack` on Linux. Pinned to Zig 0.15.2 for now;
+    // a 0.16 branch will follow once consumers (pixi) are migrated.
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.2",
+
+    .dependencies = .{
+        // Prebuilt C-ABI archives for every supported triple. Same release
+        // pixi currently uses; bump in lockstep so both consumers see the
+        // same Velopack runtime version.
+        .velopack = .{
+            .url = "https://github.com/velopack/velopack/releases/download/0.0.1589-ga2c5a97/velopack_libc_0.0.1589-ga2c5a97.zip",
+            .hash = "N-V-__8AAGLSaQX1RqiiyJ0wx1tREvLoiEyH-NHb0YTvjMzW",
+        },
+        // Source-only tarball for mksquashfs (Linux AppImage build inside
+        // `vpk pack`). Lazy — only fetched when buildMksquashfs() is called.
+        .@"squashfs-tools" = .{
+            .url = "git+https://github.com/plougher/squashfs-tools?ref=master#55381b3c75812d7856518a5843502185db22e98e",
+            .hash = "N-V-__8AADLmQgBO-gn4-alEvrUeC4MdMNbAuvZypPfnh3Ao",
+            .lazy = true,
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "tools",
+        "README.md",
+        "LICENSE",
+    },
+}
