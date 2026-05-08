@@ -2,8 +2,8 @@
     .name = .velopack_zig,
 
     // Wraps the prebuilt Velopack C-ABI archives published at
-    // https://github.com/velopack/velopack/releases plus the squashfs-tools
-    // sources needed by `vpk pack` on Linux. Targets Zig 0.15.2 on main (see README).
+    // https://github.com/velopack/velopack/releases plus Zig-built mksquashfs
+    // (squashfs-tools + zlib) for `vpk pack` on Linux.
     .version = "0.0.1",
     .minimum_zig_version = "0.15.2",
 
@@ -15,11 +15,10 @@
             .url = "https://github.com/velopack/velopack/releases/download/0.0.1589-ga2c5a97/velopack_libc_0.0.1589-ga2c5a97.zip",
             .hash = "N-V-__8AAGLSaQX1RqiiyJ0wx1tREvLoiEyH-NHb0YTvjMzW",
         },
-        // Source-only tarball for mksquashfs (Linux AppImage build inside
-        // `vpk pack`). Lazy — only fetched when buildMksquashfs() is called.
-        .@"squashfs-tools" = .{
-            .url = "git+https://github.com/plougher/squashfs-tools?ref=master#55381b3c75812d7856518a5843502185db22e98e",
-            .hash = "N-V-__8AADLmQgBO-gn4-alEvrUeC4MdMNbAuvZypPfnh3Ao",
+        // Zig build of mksquashfs (+ unsquashfs) from upstream squashfs-tools.
+        // Lazy — only fetched when buildMksquashfs() is called on a Linux host.
+        .squashfs = .{
+            .path = "squashfs",
             .lazy = true,
         },
     },
@@ -27,6 +26,7 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "squashfs",
         "tools",
         "README.md",
         "LICENSE",
