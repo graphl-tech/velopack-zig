@@ -47,6 +47,16 @@ fn ownBuilder(b: *std.Build) *std.Build {
 // Per-build cache of the trim-velopack-lib host tool.
 var trim_velopack_tool: ?*std.Build.Step.Compile = null;
 
+// Per-consumer-builder cache of the `dotnet tool restore` Run, so multiple
+// linkVelopack/addVpkPack callsites share a single restore step.
+var dotnet_restore_cache: std.AutoHashMapUnmanaged(*std.Build, *std.Build.Step.Run) = .{};
+
+fn cachedDotnetToolRestore(b: *std.Build) *std.Build.Step.Run {
+    const gop = dotnet_restore_cache.getOrPut(b.allocator, b) catch @panic("OOM");
+    if (!gop.found_existing) gop.value_ptr.* = addDotnetToolRestoreStep(b);
+    return gop.value_ptr.*;
+}
+
 fn trimVelopackLibTool(own: *std.Build) *std.Build.Step.Compile {
     if (trim_velopack_tool) |t| return t;
     const t = own.addExecutable(.{
@@ -73,6 +83,7 @@ fn trimVelopackLibTool(own: *std.Build) *std.Build.Step.Compile {
 pub const LinkVelopackOptions = struct {
     /// Target the consumer is building for.
     target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
 };
 
 pub fn linkVelopack(
@@ -138,12 +149,29 @@ pub fn linkVelopack(
         .macos => compile.root_module.addRPathSpecial("@loader_path"),
         else => {},
     }
+
+    // Velopack's `vpk` is a .NET tool pinned via .config/dotnet-tools.json;
+    // packaging fails on a fresh checkout / CI runner without `dotnet tool
+    // restore`. Attach a cached, idempotent restore Run to the compile so
+    // consumers don't have to wire it themselves. Cheap when already restored.
+    compile.step.dependOn(&cachedDotnetToolRestore(b).step);
 }
 
 // ---------------------------------------------------------------------------
 // buildMksquashfs — build mksquashfs via the bundled Zig squashfs package
 // (upstream squashfs-tools + zlib) and return its bin dir for vpk pack's PATH.
-// Linux host only; returns null otherwise.
+//
+// Returns null in two cases (callers should treat both the same — fall back
+// to whatever `mksquashfs` is on PATH, or skip AppImage packaging):
+//
+//   1. The host OS doesn't build mksquashfs (Windows). Velopack does not need
+//      squashfs there.
+//   2. The bundled squashfs-tools source is a **lazy dependency** that hasn't
+//      been fetched yet. Zig's build runner prints a "run with --fetch"
+//      hint on the first build; subsequent builds resolve normally.
+//
+// Wire the returned step as a dependency of your `vpk pack` Run, and pass
+// `bin_dir` to `Run.addPathDir(...)` so vpk picks up the bundled mksquashfs.
 // ---------------------------------------------------------------------------
 
 pub const MksquashfsBuild = struct {
@@ -153,6 +181,13 @@ pub const MksquashfsBuild = struct {
     bin_dir: []const u8,
 };
 
+/// Build the bundled mksquashfs for Linux AppImage packaging.
+///
+/// Returns null on hosts that don't build squashfs (Windows) and on the very
+/// first build before the lazy `squashfs` dependency has been fetched (Zig's
+/// build runner will then prompt the user to re-run with `--fetch`). Either
+/// way, callers can simply skip wiring `bin_dir` into the vpk Run and rely on
+/// a host `mksquashfs` if one is on `PATH`.
 pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
     const own = ownBuilder(b);
     if (own.graph.host.result.os.tag == .windows)
@@ -174,6 +209,25 @@ pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
     };
 }
 
+/// Wire the bundled mksquashfs into a `vpk pack` Run for Linux targets.
+///
+/// No-op for non-Linux targets: vpk only needs squashfs when packaging a Linux
+/// AppImage. On Linux targets this builds mksquashfs (lazily — first build
+/// prompts the user to `--fetch`) and prepends its bin dir to the Run's PATH.
+///
+/// Consumers should call this on every vpk Run; velopack-zig handles the
+/// target-os check internally so the consumer doesn't have to.
+pub fn attachMksquashfsToVpkRun(
+    b: *std.Build,
+    run: *std.Build.Step.Run,
+    target: std.Build.ResolvedTarget,
+) !void {
+    if (target.result.os.tag != .linux) return;
+    const built = (try buildMksquashfs(b)) orelse return;
+    run.addPathDir(built.bin_dir);
+    run.step.dependOn(built.step);
+}
+
 // ---------------------------------------------------------------------------
 // addMsvcupSetupStep — install MSVC + Windows SDK into a writable directory
 // and emit zig-libc-{x64,arm64}.ini, all from the bundled tools/setup-msvc.sh
@@ -186,14 +240,14 @@ pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
 ///
 /// `install_dir` is the absolute or build-root-relative directory where the
 /// MSVC tree + zig-libc-*.ini will be written. Pass null to use
-/// `<build_root>/velopack-msvc`.
+/// `<build_root>/.velopack-msvc`.
 pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.Step.Run {
     const own = ownBuilder(b);
 
     const resolved_install_dir: []const u8 = if (install_dir) |p|
         if (std.fs.path.isAbsolute(p)) b.dupePath(p) else b.pathFromRoot(p)
     else
-        b.pathFromRoot("velopack-msvc");
+        b.pathFromRoot(".velopack-msvc");
 
     const env_path = own.path("tools/msvcup.env").getPath3(b, null).toString(b.allocator) catch |e|
         std.debug.panic("velopack-zig: resolve msvcup.env: {}", .{e});
@@ -224,20 +278,24 @@ pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.St
 }
 
 // ---------------------------------------------------------------------------
-// resolveWindowsMsvcLibc — locate the right zig-libc-*.ini for cross-compile.
-// Order of resolution:
+// resolveWindowsMsvcLibc — locate the right zig-libc-*.ini for *-windows-msvc.
+// Resolution order (host-agnostic — same behaviour on Windows and on
+// non-Windows hosts that cross-compile to *-windows-msvc):
 //   1. explicit_path (e.g. -Dwindows-msvc-libc=)
 //   2. <build_root>/<install_dir_name>/zig-libc-{x64,arm64}.ini if it exists
 //   3. when fetch_if_missing=true and the file is absent: returns the would-be
 //      path with .needs_setup = true; caller should attach msvcup-setup as a
 //      dep of compile.
-// On native Windows hosts this returns null when the file is missing — Zig
-// auto-detects an installed MSVC and that's preferred.
+// Returns null when nothing is configured. On native Windows hosts that lets
+// Zig fall back to auto-detecting an installed Visual Studio (preferred when
+// the developer already has it). To force the msvcup-installed SDK on a
+// Windows host instead, run `msvcup-setup` once or pass -Dfetch-msvc — the
+// existence of <install_dir_name>/zig-libc-*.ini wins over auto-detect.
 // ---------------------------------------------------------------------------
 
 pub const ResolveWindowsMsvcLibcOptions = struct {
     explicit_path: ?[]const u8 = null,
-    install_dir_name: []const u8 = "velopack-msvc",
+    install_dir_name: []const u8 = ".velopack-msvc",
     fetch_if_missing: bool = false,
 };
 
@@ -270,15 +328,35 @@ pub fn resolveWindowsMsvcLibc(
         b.build_root.handle.access(rel, .{}) catch break :blk false;
         break :blk true;
     };
-    const cross_from_non_windows = b.graph.host.result.os.tag != .windows;
 
-    if (exists and cross_from_non_windows) {
+    // Same behaviour on Windows and non-Windows hosts: an installed
+    // <install_dir_name>/ tree (or -Dfetch-msvc) wins; otherwise return null
+    // and let the caller decide (Zig auto-detect on Windows; explicit failure
+    // on non-Windows hosts that can't auto-detect).
+    if (exists) {
         return .{ .libc_path = b.pathFromRoot(rel), .needs_setup = false };
     }
-    if (opts.fetch_if_missing and !exists and cross_from_non_windows) {
+    if (opts.fetch_if_missing) {
         return .{ .libc_path = b.pathFromRoot(rel), .needs_setup = true };
     }
     return .{ .libc_path = null, .needs_setup = false };
+}
+
+// ---------------------------------------------------------------------------
+// addDotnetToolRestoreStep — `dotnet tool restore` in the consumer build root.
+// Velopack's `vpk` is shipped as a .NET tool; projects that pin it via a
+// repo-local `.config/dotnet-tools.json` need to run `dotnet tool restore`
+// before `dotnet vpk pack ...` will work. Wire this Run as a dependency of
+// your vpk Run (or of the first iteration of a packageall sequence) so a
+// fresh checkout / CI runner doesn't fail with "tool not found".
+// ---------------------------------------------------------------------------
+
+/// Returns a Run that executes `dotnet tool restore` in the consumer's build
+/// root. Idempotent and cheap when the tools are already restored.
+pub fn addDotnetToolRestoreStep(b: *std.Build) *std.Build.Step.Run {
+    const r = b.addSystemCommand(&.{ "dotnet", "tool", "restore" });
+    r.setCwd(b.path("."));
+    return r;
 }
 
 // ---------------------------------------------------------------------------
