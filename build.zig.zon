@@ -1,11 +1,12 @@
 .{
     .name = .velopack_zig,
+    .fingerprint = 0x95d249847186372f,
 
     // Wraps the prebuilt Velopack C-ABI archives published at
     // https://github.com/velopack/velopack/releases plus Zig-built mksquashfs
     // (squashfs-tools + zlib) for `vpk pack` on Linux.
     .version = "0.0.1",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
         // Prebuilt C-ABI archives for every supported triple. Same release

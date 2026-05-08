@@ -10,7 +10,7 @@ The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and
 
 ## Zig version
 
-**`main` targets Zig 0.15.2** (`build.zig.zon` `minimum_zig_version`). 
+**`main` targets Zig 0.16.0** (`build.zig.zon` `minimum_zig_version`). 
 
 ## What this package provides
 
@@ -38,7 +38,7 @@ Velopack’s Windows prebuilt is **MSVC**. Use `x86_64-windows-msvc` or `aarch64
 
 | Requirement | When |
 |-------------|------|
-| **Zig 0.15.2** | Always (see `minimum_zig_version`). |
+| **Zig 0.16.0** | Always (see `minimum_zig_version`). |
 | **[.NET SDK](https://dotnet.microsoft.com/download)** | Whenever you run **`vpk`** for packaging (`dotnet tool` / global `vpk`). Velopack’s CLI is distributed as a .NET tool; **`dotnet` is required for packaging, not for `linkVelopack` alone**. |
 | **Xcode / CLT** (codesign, `notarytool`) | macOS **signed** / **notarized** releases only. |
 | **Apple Developer Program** | Distribution signing + notarization. |
@@ -116,7 +116,7 @@ Read these with `b.graph.environ_map.get("MYAPP_MACOS_SIGN_APP")` (or `std.proce
 
 Unsigned `vpk pack` can work for local testing. For release: build **ReleaseFast** (or equivalent) → **`vpk pack`** with signing + entitlements → notarization (via `--notaryProfile`) → staple if required. Consult [Velopack’s macOS documentation](https://docs.velopack.io/) for the exact `vpk` flags your version supports.
 
-## Example: `build.zig` (Zig 0.15.2)
+## Example: `build.zig` (Zig 0.16.0)
 
 `build.zig.zon`:
 
