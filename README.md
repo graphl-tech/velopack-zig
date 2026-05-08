@@ -14,17 +14,21 @@ The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and
 
 ## What this package provides
 
-- **`linkVelopack(b, exe, .{ .target = target })`** — Adds the `Velopack.h` include path, picks the correct prebuilt static library for the resolved target, links Winsock + BCrypt on Windows, and sets `$ORIGIN` / `@loader_path` rpath on Linux / macOS. For `*-windows-msvc` it copies the `.lib` into a writable dir and trims Velopack’s bundled Rust `compiler_builtins-*` members (which would otherwise collide with Zig’s `compiler_rt`). Trimming uses `zig ar` from the Zig toolchain; no separate LLVM install is required.
+- **`linkVelopack(b, exe, .{ .target = target })`** — Adds the `Velopack.h` include path, picks the correct prebuilt static library for the resolved target, links Winsock + BCrypt on Windows, and sets `$ORIGIN` / `@loader_path` rpath on Linux / macOS. For `*-windows-msvc` it copies the `.lib` into a writable dir and trims Velopack’s bundled Rust `compiler_builtins-*` members (which would otherwise collide with Zig’s `compiler_rt`). Trimming uses `zig ar` from the Zig toolchain; no separate LLVM install is required. Also automatically attaches a cached `dotnet tool restore` step as a dep of the compile, so a fresh checkout / CI runner has `vpk` ready by the time you run packaging — consumers don't need to wire `addDotnetToolRestoreStep` themselves.
 
-- **`buildMksquashfs(b)`** — Builds `mksquashfs` with Zig (C compilation + bundled zlib) on **Linux hosts only**; returns `null` on macOS/Windows (Velopack does not need squashfs there). Returns a step and `bin_dir` (under the consumer install prefix) for `PATH` when running `vpk pack` for **Linux** (AppImage flow). Returns `null` if the lazy dependency was not activated. **Cross-packaging a Linux AppImage from a non-Linux host** requires putting a suitable `mksquashfs` on `PATH` yourself (CI Linux runner, container, etc.).
+- **`attachMksquashfsToVpkRun(b, vpk_run, target)`** — One-call helper that wires the bundled `mksquashfs` into a `vpk pack` Run for **Linux targets** (no-op for non-Linux targets, since Velopack only needs squashfs for AppImage packaging). Internally calls `buildMksquashfs` and adds its step as a dep + prepends its bin dir to the Run's PATH. **Cross-packaging a Linux AppImage from a non-Linux host** still requires a suitable `mksquashfs` on `PATH` yourself (CI Linux runner, container, etc.) — the bundled build is host-only.
+
+- **`buildMksquashfs(b)`** — Lower-level helper exposed for advanced uses. Builds `mksquashfs` with Zig (C compilation + bundled zlib) on **Linux hosts only**; returns `null` on macOS/Windows or when the lazy dep is not yet activated. Returns a step and `bin_dir` (under the consumer install prefix). Most consumers should use `attachMksquashfsToVpkRun` instead.
 
 - **`addMsvcupSetupStep(b, install_dir)`** — Runs [msvcup](https://github.com/marler8997/msvcup) (via bundled scripts) to install MSVC + Windows SDK into a writable directory under the **project root** and emits Zig `--libc` manifests (`zig-libc-x64.ini`, `zig-libc-arm64.ini`).  
-  - Pass `null` for `install_dir` to use `<build_root>/velopack-msvc`.  
+  - Pass `null` for `install_dir` to use `<build_root>/.velopack-msvc`.  
   - Pass e.g. `"my-msvc"` for `<build_root>/my-msvc` (and use the same string as `install_dir_name` in `resolveWindowsMsvcLibc`).
 
-- **`resolveWindowsMsvcLibc(b, target, .{ ... })`** — Resolves the libc INI path for `*-windows-msvc` **when cross-compiling from a non-Windows host** (or when you pass an explicit `-Dwindows-msvc-libc=...`-style path). Options include `explicit_path`, `install_dir_name` (must match `addMsvcupSetupStep`), and `fetch_if_missing` (returns `.needs_setup = true` so you can depend on the msvcup step before compiling).
+- **`resolveWindowsMsvcLibc(b, target, .{ ... })`** — Resolves the libc INI path for `*-windows-msvc`. Same behaviour on Windows and on non-Windows hosts: an explicit `-Dwindows-msvc-libc=...`-style path wins; otherwise an installed `<install_dir_name>/zig-libc-{x64,arm64}.ini` (from `msvcup-setup`) is returned, and otherwise `null` (let Zig auto-detect on Windows; explicit failure on non-Windows). Options include `explicit_path`, `install_dir_name` (must match `addMsvcupSetupStep`), and `fetch_if_missing` (returns `.needs_setup = true` so you can depend on the msvcup step before compiling). On Windows hosts that already have Visual Studio, simply don't run `msvcup-setup` and Zig's auto-detect stays in effect; running `msvcup-setup` once forces the hermetic toolchain instead.
 
 - **`applyWindowsMsvcLibcRecursive(b, roots, libc)`** — Applies a libc INI to the executable and every `*-windows-msvc` compile reachable from it, so C dependencies (SDL, FreeType, etc.) see the same MSVC / UCRT headers and libs.
+
+- **`addDotnetToolRestoreStep(b)`** — Returns a `Run` that executes `dotnet tool restore` in the consumer's build root. `vpk` is shipped as a .NET tool; projects pinning it via `.config/dotnet-tools.json` need this to run before `dotnet vpk …` works on a fresh checkout / CI runner. **You usually don't need to call this directly** — `linkVelopack` already attaches a cached, idempotent restore step to your compile. Exposed for consumers who want to run `dotnet tool restore` independent of linking Velopack (e.g. a top-level `tool-restore` step).
 
 ### Windows ABI note
 
@@ -48,7 +52,7 @@ Set `DOTNET_ROLL_FORWARD=Major` when running `vpk` if you use a newer runtime th
 1. **Build** your app for the intended target (`zig build …` with the right `-Dtarget=…`).
 2. **Install** or stage the built executable so `vpk` can see a directory containing the app binary and assets (Velopack expects a “pack dir”; layout depends on your integration).
 3. Run **`vpk pack`** (via `dotnet vpk pack …`) with `--packId`, `--packVersion`, `--mainExe`, `--packDir`, `--outputDir`, etc.
-4. **Linux AppImage / `mksquashfs`:** on a **Linux** build host, use `buildMksquashfs` and `Run.addPathDir(sq.bin_dir)` on the same step that invokes `vpk` (see example below). From macOS/Windows hosts, ensure a compatible `mksquashfs` is on `PATH` yourself (for example run packaging on a Linux CI job).
+4. **Linux AppImage / `mksquashfs`:** on a **Linux** build host, call `attachMksquashfsToVpkRun(b, vpk_run, target)` once on your `vpk` Run — it's a no-op for non-Linux targets and otherwise wires the bundled `mksquashfs` into the Run's PATH. From macOS/Windows hosts targeting Linux, ensure a compatible `mksquashfs` is on `PATH` yourself (for example run packaging on a Linux CI job).
 5. **Cross-OS packaging from one machine:** when the **host OS ≠ package OS**, `vpk` needs an OS selector prefix, e.g. `vpk [win] pack …`, `vpk [linux] pack …`, `vpk [osx] pack …`, because it otherwise infers the platform from the host.
 
 `velopack-zig` does **not** invoke `vpk` for you; your `build.zig` (or shell scripts / CI) wires the `Run` step. This keeps signing secrets and product-specific flags in **your** project.
@@ -64,11 +68,11 @@ Set `DOTNET_ROLL_FORWARD=Major` when running `vpk` if you use a newer runtime th
 ### Linux
 
 - Build your binary for `x86_64-linux-gnu` / `aarch64-linux-gnu` as usual; `linkVelopack` links the gnu `.a` and sets rpath.
-- For **`vpk pack`** to produce an AppImage, **`mksquashfs` must be available**. Call `buildMksquashfs`, depend your `vpk` `Run` step on `sq.step`, and add `sq.bin_dir` to PATH (example below).
+- For **`vpk pack`** to produce an AppImage, **`mksquashfs` must be available**. Call `attachMksquashfsToVpkRun(b, vpk_run, target)` once on your `vpk` Run; it handles the linux-target check, lazy `mksquashfs` build, and PATH/dep wiring (example below).
 
 ## MSVC bootstrap: `msvcup-setup`
 
-Use this when cross-compiling **to** `*-windows-msvc` **from** a non-Windows host (or when you want a hermetic toolchain tree in the repo).
+Use this when cross-compiling **to** `*-windows-msvc` **from** a non-Windows host, **or** on a Windows host where you want a hermetic toolchain tree in the repo (instead of relying on a system-wide Visual Studio install). The setup step works the same on Windows, macOS, and Linux — `setup-msvc.ps1` runs on Windows hosts and `setup-msvc.sh` runs everywhere else.
 
 1. Expose a step in your `build.zig`:
    ```zig
@@ -77,7 +81,7 @@ Use this when cross-compiling **to** `*-windows-msvc` **from** a non-Windows hos
    msvcup_step.dependOn(&msvcup.step);
    ```
 2. Run: **`zig build msvcup-setup`** (network required; large download).
-3. Outputs land under **`velopack-msvc/`** (or your custom directory): MSVC tree + **`zig-libc-x64.ini`** / **`zig-libc-arm64.ini`**.
+3. Outputs land under **`.velopack-msvc/`** (or your custom directory): MSVC tree + **`zig-libc-x64.ini`** / **`zig-libc-arm64.ini`**.
 4. Wire **`resolveWindowsMsvcLibc`** + **`applyWindowsMsvcLibcRecursive`** (and optional `exe.step.dependOn(&msvcup.step)` when `.needs_setup`) so the main executable and all C dependencies use that INI.
 
 If you use a custom directory, pass the **same** basename to both `addMsvcupSetupStep(b, "my-msvc")` and `resolveWindowsMsvcLibc(b, target, .{ .install_dir_name = "my-msvc", ... })`.
@@ -162,12 +166,7 @@ pub fn build(b: *std.Build) !void {
     vpk.addDirectoryArg(exe.getEmittedBin().dirname());
     vpk.setEnvironmentVariable("DOTNET_ROLL_FORWARD", "Major");
 
-    if (target.result.os.tag == .linux) {
-        if (try velopack.buildMksquashfs(b)) |sq| {
-            vpk.step.dependOn(sq.step);
-            vpk.addPathDir(sq.bin_dir);
-        }
-    }
+    try velopack.attachMksquashfsToVpkRun(b, vpk, target);
 
     vpk.step.dependOn(&exe.step);
 
@@ -189,7 +188,7 @@ pub fn build(b: *std.Build) !void {
 const fetch_msvc = b.option(bool, "fetch-msvc", "Run msvcup before compile when libc ini missing") orelse false;
 const resolved = velopack.resolveWindowsMsvcLibc(b, target, .{
     .fetch_if_missing = fetch_msvc,
-    .install_dir_name = "velopack-msvc", // default; omit if unchanged
+    .install_dir_name = ".velopack-msvc", // default; omit if unchanged
 });
 if (resolved.libc_path) |ini| {
     const libc_lp: std.Build.LazyPath = .{ .cwd_relative = ini };

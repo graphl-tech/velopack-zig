@@ -8,7 +8,7 @@ recents.json
 .temp/
 *.code-workspace
 zig-pkg/
-pixi-msvc/
+.velopack-msvc/
 tools/msvcup-bin/
 tools/msvc-libc*.ini
 .zig-cache/
