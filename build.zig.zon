@@ -3,8 +3,7 @@
 
     // Wraps the prebuilt Velopack C-ABI archives published at
     // https://github.com/velopack/velopack/releases plus the squashfs-tools
-    // sources needed by `vpk pack` on Linux. Pinned to Zig 0.15.2 for now;
-    // a 0.16 branch will follow once consumers (pixi) are migrated.
+    // sources needed by `vpk pack` on Linux. Targets Zig 0.15.2 on main (see README).
     .version = "0.0.1",
     .minimum_zig_version = "0.15.2",
 

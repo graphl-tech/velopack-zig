@@ -20,7 +20,7 @@
 //! as its own zon dependencies, so consumer projects do not need to declare
 //! either themselves.
 //!
-//! Pinned to Zig 0.15.2; a 0.16 branch will follow when pixi migrates.
+//! Targets **Zig 0.15.2** on `main`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -215,8 +215,8 @@ pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.St
             const script_path = own.path("tools/setup-msvc.ps1").getPath3(b, null).toString(b.allocator) catch |e|
                 std.debug.panic("velopack-zig: resolve setup-msvc.ps1: {}", .{e});
             const r = b.addSystemCommand(&.{
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File",      script_path, resolved_install_dir,
+                "powershell", "-NoProfile", "-ExecutionPolicy",   "Bypass",
+                "-File",      script_path,  resolved_install_dir,
             });
             break :blk r;
         },
