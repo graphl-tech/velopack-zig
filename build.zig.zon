@@ -6,6 +6,7 @@
     // (squashfs-tools + zlib) for `vpk pack` on Linux.
     .version = "0.0.1",
     .minimum_zig_version = "0.15.2",
+    .fingerprint = 0x95d249841170b06d,
 
     .dependencies = .{
         // Prebuilt C-ABI archives for every supported triple. Same release
@@ -18,7 +19,7 @@
         // Zig build of mksquashfs (+ unsquashfs) from upstream squashfs-tools.
         // Lazy — only fetched when buildMksquashfs() is called on a Linux host.
         .squashfs = .{
-            .path = "squashfs",
+            .path = "git+https://github.com/allyourcodebase/squashfs-tools?ref=main#4ed6b23f0ccd0c108ec88745e10a506f6030128f",
             .lazy = true,
         },
     },

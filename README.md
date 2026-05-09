@@ -4,9 +4,9 @@ Shared build glue for using [Velopack](https://velopack.io) from Zig projects. I
 
 The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and a Zig-built `mksquashfs` (upstream squashfs-tools + zlib, same commit as before) as its own `build.zig.zon` dependencies, so consumers do not need to declare those themselves.
 
-## Add this package to your project (`build.zig.zon` + `zig fetch`)
+## Add this package to your zig project
 
-```zig fetch --save "https://github.com/graphl-tech/velopack-zig/archive/da71ab60106022e8d0593b0de61961f629d5ee09.tar.gz"```
+```zig fetch --save "git+https://github.com/graphl-tech/velopack-zig#main"```
 
 ## Zig version
 
