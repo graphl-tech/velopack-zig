@@ -19,7 +19,8 @@
         // Zig build of mksquashfs (+ unsquashfs) from upstream squashfs-tools.
         // Lazy — only fetched when buildMksquashfs() is called on a Linux host.
         .squashfs = .{
-            .path = "git+https://github.com/allyourcodebase/squashfs-tools?ref=main#4ed6b23f0ccd0c108ec88745e10a506f6030128f",
+            .url = "git+https://github.com/allyourcodebase/squashfs-tools?ref=main#4ed6b23f0ccd0c108ec88745e10a506f6030128f",
+            .hash = "squashfs-4.7.5-oYR59XkYAABk2d0xgAhBoMmnidQCk0wSoTK9OFrRZ9V9",
             .lazy = true,
         },
     },
