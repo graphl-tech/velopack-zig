@@ -75,6 +75,31 @@ if ($needInstall) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+# Vendor GameInput.h from MSVCUP_GAMEINPUT_PACKAGE into the base SDK's um/.
+# The base SDK (22621) lacks it; the package that has it (26100) has a broken
+# shared/ so it can't be installed into the main tree.  Install it to a scratch
+# dir, copy just the one header, discard the rest.  Idempotent: skipped once the
+# header is in place, so re-runs don't re-download the 26100 package.
+$mainUm = Get-ChildItem -Path (Join-Path $InstallRoot 'Windows Kits\10\Include\*\um') -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($mainUm -and $env:MSVCUP_GAMEINPUT_PACKAGE) {
+    $gameInput = Join-Path $mainUm.FullName 'GameInput.h'
+    if (-not (Test-Path -LiteralPath $gameInput)) {
+        Write-Host "Vendoring GameInput.h from $($env:MSVCUP_GAMEINPUT_PACKAGE)..."
+        $giTmp = Join-Path $InstallRoot '.gameinput-src'
+        Remove-Item -LiteralPath $giTmp -Recurse -Force -ErrorAction SilentlyContinue
+        & $msvcup install $giTmp --manifest-update-off $env:MSVCUP_GAMEINPUT_PACKAGE
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $giSrc = Get-ChildItem -Path (Join-Path $giTmp 'Windows Kits\10\Include\*\um\GameInput.h') -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($giSrc) {
+            Copy-Item -LiteralPath $giSrc.FullName -Destination $gameInput -Force
+            Write-Host "  -> $gameInput"
+        } else {
+            Write-Warning "GameInput.h not found in $($env:MSVCUP_GAMEINPUT_PACKAGE)"
+        }
+        Remove-Item -LiteralPath $giTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 & $Zig run $GenScript -- $InstallRoot x64 (Join-Path $InstallRoot 'zig-libc-x64.ini')
 & $Zig run $GenScript -- $InstallRoot arm64 (Join-Path $InstallRoot 'zig-libc-arm64.ini')
 Write-Host 'Done.'

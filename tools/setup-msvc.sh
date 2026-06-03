@@ -80,6 +80,34 @@ if [[ $needs_install -eq 1 ]]; then
   "$MSVCUP" install "$INSTALL_ROOT" --manifest-update-off ${MSVCUP_PACKAGES}
 fi
 
+# Vendor GameInput.h from MSVCUP_GAMEINPUT_PACKAGE into the base SDK's um/.
+# The base SDK (22621) lacks it; the package that has it (26100) has a broken
+# shared/ so it can't be installed into the main tree.  Install it to a scratch
+# dir, copy just the one header, discard the rest.  Idempotent: skipped once the
+# header is in place, so re-runs don't re-download the 26100 package.
+shopt -s nullglob
+main_um_dirs=("$INSTALL_ROOT/Windows Kits/10/Include"/*/um)
+shopt -u nullglob
+if [[ ${#main_um_dirs[@]} -gt 0 && -n "${MSVCUP_GAMEINPUT_PACKAGE:-}" ]]; then
+  main_um="${main_um_dirs[0]}"
+  if [[ ! -f "$main_um/GameInput.h" ]]; then
+    echo "Vendoring GameInput.h from $MSVCUP_GAMEINPUT_PACKAGE..."
+    GI_TMP="$INSTALL_ROOT/.gameinput-src"
+    rm -rf "$GI_TMP"
+    "$MSVCUP" install "$GI_TMP" --manifest-update-off "$MSVCUP_GAMEINPUT_PACKAGE"
+    shopt -s nullglob
+    gi_src=("$GI_TMP/Windows Kits/10/Include"/*/um/GameInput.h)
+    shopt -u nullglob
+    if [[ ${#gi_src[@]} -gt 0 ]]; then
+      cp "${gi_src[0]}" "$main_um/GameInput.h"
+      echo "  -> $main_um/GameInput.h"
+    else
+      echo "warning: GameInput.h not found in $MSVCUP_GAMEINPUT_PACKAGE" >&2
+    fi
+    rm -rf "$GI_TMP"
+  fi
+fi
+
 echo "Writing zig libc manifests..."
 "$ZIG" run "$GEN_SCRIPT" -- "$INSTALL_ROOT" x64 "$INSTALL_ROOT/zig-libc-x64.ini"
 "$ZIG" run "$GEN_SCRIPT" -- "$INSTALL_ROOT" arm64 "$INSTALL_ROOT/zig-libc-arm64.ini"
