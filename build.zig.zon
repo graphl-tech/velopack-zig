@@ -4,7 +4,7 @@
     // Wraps the prebuilt Velopack C-ABI archives published at
     // https://github.com/velopack/velopack/releases plus Zig-built mksquashfs
     // (squashfs-tools + zlib) for `vpk pack` on Linux.
-    .version = "0.0.1",
+    .version = "0.1.0",
     .minimum_zig_version = "0.15.2",
     .fingerprint = 0x95d249841170b06d,
 
