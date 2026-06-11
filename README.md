@@ -1,8 +1,15 @@
 # velopack-zig
 
-Shared build glue for using [Velopack](https://velopack.io) from Zig projects. It wraps the prebuilt Velopack C-ABI archives and helps wire **linking**, **Linux `mksquashfs`**, and **MSVC toolchain bootstrap** for `*-windows-msvc` cross-compiles.
+Shared build glue for using [Velopack](https://velopack.io) from Zig projects.
+It wraps the Velopack runtime C API and build toolset, and builds dependencies
+with zig where possible.
 
-The library bundles the Velopack release zip (currently `0.0.1589-ga2c5a97`) and a Zig-built `mksquashfs` (upstream squashfs-tools + zlib, same commit as before) as its own `build.zig.zon` dependencies, so consumers do not need to declare those themselves.
+The Velopack release version is `0.0.1589-ga2c5a97`.
+
+The runtime has a dependency on libgcc_s (See issue #TODO).
+
+Velopack's cli has a dependency on .NET 9 so must be installed on the
+system to use this package.
 
 ## Add this package to your zig project
 
