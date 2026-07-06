@@ -193,6 +193,12 @@ pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
     if (own.graph.host.result.os.tag == .windows)
         return null;
 
+    // squashfs-tools isn't on zig 0.16 yet; only resolve it (which compiles its
+    // build.zig) when packaging explicitly opts in, so plain `zig build` /
+    // `zig build test` don't drag a 0.15-era dependency into the graph.
+    if (own.graph.environ_map.get("VELOPACK_MKSQUASHFS") == null)
+        return null;
+
     const dep = own.lazyDependency("squashfs", .{
         .target = own.graph.host,
         .optimize = .ReleaseFast,
@@ -325,7 +331,7 @@ pub fn resolveWindowsMsvcLibc(
     const rel = b.fmt("{s}/zig-libc-{s}.ini", .{ opts.install_dir_name, arch_suffix });
 
     const exists = blk: {
-        b.build_root.handle.access(rel, .{}) catch break :blk false;
+        b.build_root.handle.access(b.graph.io, rel, .{}) catch break :blk false;
         break :blk true;
     };
 
