@@ -260,6 +260,14 @@ pub const VpkVersion = union(enum) {
     }
 };
 
+/// A `vpk` argument whose value is a path produced by the build graph.
+pub const VpkPathArg = struct {
+    /// Flag emitted before the path, e.g. `"--releaseNotes"`. Null passes the
+    /// path on its own.
+    prefix: ?[]const u8 = null,
+    path: std.Build.LazyPath,
+};
+
 pub const VelopackOptions = struct {
     /// `--packId`: the app's unique Velopack id.
     name: []const u8,
@@ -286,10 +294,16 @@ pub const VelopackOptions = struct {
     channel: ?[]const u8 = null,
     /// `--delta`: `"None"`, `"BestSpeed"` or `"BestSize"`.
     delta: []const u8 = "None",
-    /// Appended verbatim after every generated argument — signing identities,
-    /// notarization profiles, `--releaseNotes`, and anything else this wrapper
-    /// doesn't model.
-    extra_args: []const []const u8 = &.{},
+    /// Appended verbatim after every generated argument, for the many `vpk pack`
+    /// flags this wrapper doesn't model — signing identities, notarization
+    /// profiles, `--exclude`, `--shortcuts`, and so on. See
+    /// https://docs.velopack.io/reference/cli for the full set.
+    extra_vpk_args: []const []const u8 = &.{},
+    /// Like `extra_vpk_args`, but each value is resolved to a build-graph path
+    /// when the step runs, and the pack step waits on whatever produces it.
+    /// Use it for flags that take a file this build generates, e.g.
+    /// `&.{ .{ .prefix = "--releaseNotes", .path = notes } }`.
+    extra_vpk_path_args: []const VpkPathArg = &.{},
     /// Steps that must finish before `vpk pack` runs. `source_dir` already
     /// pulls in whatever produced it; this is for work that touches the staged
     /// payload without being its producer, such as stripping the binary.
@@ -322,7 +336,8 @@ pub const VelopackedAppDirOptions = struct {
     icon: ?std.Build.LazyPath = null,
     channel: ?[]const u8 = null,
     delta: []const u8 = "None",
-    extra_args: []const []const u8 = &.{},
+    extra_vpk_args: []const []const u8 = &.{},
+    extra_vpk_path_args: []const VpkPathArg = &.{},
     depends_on: []const *std.Build.Step = &.{},
     install_vpk: bool = false,
     vpk_version: VpkVersion = .bundled,
@@ -401,7 +416,11 @@ pub fn addVelopackStep(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run
     run.addDirectoryArg(opts.source_dir);
     run.addArg("--outputDir");
     _ = run.addOutputDirectoryArg(b.fmt("{s}-velopack", .{opts.name}));
-    run.addArgs(opts.extra_args);
+    run.addArgs(opts.extra_vpk_args);
+    for (opts.extra_vpk_path_args) |arg| {
+        if (arg.prefix) |prefix| run.addArg(prefix);
+        run.addFileArg(arg.path);
+    }
     for (opts.depends_on) |dep| run.step.dependOn(dep);
 
     // vpk targets an older .NET runtime than what is typically installed.

@@ -1,0 +1,34 @@
+name: package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Velopack's CLI is a .NET tool; velopack-zig installs it itself when
+      # -Dinstall-vpk=true, but it needs an SDK to install it with.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '9.0.x'
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+          cache-key: ${{ matrix.os }}
+
+      - run: ./test/package.sh
+        shell: bash

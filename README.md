@@ -66,3 +66,44 @@ and the `RELEASES` feed to `zig-out/desktop/`.
 
 Velopack's Windows prebuilt is **MSVC**. Use `x86_64-windows-msvc` or
 `aarch64-windows-msvc` (not `*-windows-gnu`).
+
+## Customizing the `vpk` command
+
+`addVelopackedAppDir` models the common `vpk pack` flags directly — `name`
+(`--packId`), `version`, `main_exe`, `title`, `authors`, `icon`, `channel`,
+`delta`. Everything else goes through:
+
+- `extra_vpk_args: []const []const u8` — appended verbatim, e.g.
+  `&.{ "--exclude", ".*\\.pdb", "--noPortable" }`.
+- `extra_vpk_path_args: []const VpkPathArg` — same, but the value is a path this
+  build produces, e.g. `&.{ .{ .prefix = "--releaseNotes", .path = notes } }`.
+  The pack step waits on whatever generates it.
+- `vpk_argv: ?[]const []const u8` — run something other than the managed `vpk`,
+  e.g. `&.{ "dotnet", "vpk" }` for a repo-local `.config/dotnet-tools.json`
+  (pair it with `addDotnetToolRestoreStep`).
+
+`addVelopackStep` returns the `*std.Build.Step.Run` itself if you would rather
+add arguments to it directly; `outputDir(run)` gives you the release directory.
+
+## Testing
+
+`test/sample/` is a minimal consumer of this package. `./test/package.sh` builds
+and packages it, which is exactly what `.github/workflows/package.yml` runs on
+Linux, macOS and Windows.
+
+## Velopack documentation
+
+- [Docs home](https://docs.velopack.io/) · [C / C++ quick start](https://docs.velopack.io/getting-started/cpp)
+  — the C ABI these bindings link against · [C API reference](https://docs.velopack.io/reference/cpp)
+- [`vpk` CLI reference](https://docs.velopack.io/reference/cli) — every flag
+  `extra_vpk_args` can carry, per platform:
+  [Windows](https://docs.velopack.io/reference/cli/content/vpk-windows) ·
+  [Linux](https://docs.velopack.io/reference/cli/content/vpk-linux) ·
+  [macOS](https://docs.velopack.io/reference/cli/content/vpk-osx)
+- [Packaging overview](https://docs.velopack.io/packaging/overview) ·
+  [Code signing](https://docs.velopack.io/packaging/signing) ·
+  [Release channels](https://docs.velopack.io/packaging/channels) ·
+  [Delta updates](https://docs.velopack.io/packaging/deltas) ·
+  [Cross compiling](https://docs.velopack.io/packaging/cross-compiling)
+- [Distributing releases](https://docs.velopack.io/distributing/overview) ·
+  [Deployment CLI](https://docs.velopack.io/distributing/deploy-cli)
