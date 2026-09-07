@@ -1,33 +1,38 @@
-//! velopack-zig — shared Velopack packaging glue for Zig projects.
+//! velopack-zig — Velopack packaging glue for Zig projects.
 //!
-//! Public API (call from a consumer's build.zig):
+//! Two calls cover the whole flow from a consumer's build.zig:
 //!
 //!   const velopack = @import("velopack_zig");
 //!
-//!   try velopack.linkVelopack(b, exe, .{ .target = target });
+//!   // 1. Link the Velopack runtime into your app. On *-windows-msvc this
+//!   //    also installs and wires up MSVC + the Windows SDK when needed.
+//!   velopack.linkVelopack(b, exe, .{ .target = target, .optimize = optimize });
 //!
-//!   // Linux AppImage build: returns a step + bin dir for vpk's PATH.
-//!   const sq = try velopack.buildMksquashfs(b);
-//!   vpk_run.step.dependOn(sq.step);
-//!   vpk_run.addPathDir(sq.bin_dir);
+//!   // 2. Run `vpk pack` over a staged directory and install its output.
+//!   const packaged = velopack.addVelopackedAppDir(b, .{
+//!       .name = "myapp",
+//!       .version = "1.0.0",
+//!       .target = target,
+//!       .source_dir = staging.getDirectory(),
+//!       .install_dir = .prefix,
+//!       .install_subdir = "desktop",
+//!       .install_vpk = b.option(bool, "install-vpk", "Download the vpk CLI") orelse false,
+//!   });
+//!   b.step("package", "Build the release bundle").dependOn(&packaged.step);
 //!
-//!   // *-windows-msvc cross-compile from non-Windows hosts.
-//!   const msvcup = velopack.addMsvcupSetupStep(b, null);
-//!   const msvcup_step = b.step("msvcup-setup", "...");
-//!   msvcup_step.dependOn(&msvcup.step);
-//!
-//! The library bundles the Velopack release zip and a Zig build of
-//! mksquashfs (upstream squashfs-tools + zlib) as its own zon dependencies,
-//! so consumer projects do not need to declare them themselves.
-//!
-//! **Linux host only** for `buildMksquashfs`: mksquashfs is built with the Zig
-//! toolchain (no `make`). On other hosts this returns `null`; put a host
-//! `mksquashfs` on `PATH` yourself if you run `vpk pack` for Linux from there.
+//! The package bundles the Velopack release zip, the `vpk` CLI provisioning and
+//! a Zig build of mksquashfs (upstream squashfs-tools + zlib), so consumers do
+//! not declare any of those themselves.
 //!
 //! Targets **Zig 0.15.2** on `main`.
 
 const std = @import("std");
 const builtin = @import("builtin");
+
+/// Velopack release whose prebuilt runtime archives this package bundles.
+/// Keep in sync with the `velopack` dependency URL in build.zig.zon — the
+/// `vpk` CLI and the linked runtime should come from the same release.
+pub const velopack_version = "0.0.1589-ga2c5a97";
 
 /// No-op `pub fn build` — velopack-zig produces no install artifacts of its
 /// own. The exposed helpers below are invoked from the consumer's build.zig.
@@ -44,30 +49,37 @@ fn ownBuilder(b: *std.Build) *std.Build {
     return b.dependencyFromBuildZig(@This(), .{}).builder;
 }
 
-// Per-build cache of the trim-velopack-lib host tool.
+// Per-build cache of the host tools we compile out of tools/.
 var trim_velopack_tool: ?*std.Build.Step.Compile = null;
+var vpk_setup_tool: ?*std.Build.Step.Compile = null;
 
-// Per-consumer-builder cache of the `dotnet tool restore` Run, so multiple
-// linkVelopack/addVpkPack callsites share a single restore step.
-var dotnet_restore_cache: std.AutoHashMapUnmanaged(*std.Build, *std.Build.Step.Run) = .{};
+// Steps that must not be duplicated when several call sites ask for them.
+// Keyed by consumer builder plus whatever else makes them distinct.
+var step_cache: std.StringHashMapUnmanaged(*std.Build.Step.Run) = .{};
 
-fn cachedDotnetToolRestore(b: *std.Build) *std.Build.Step.Run {
-    const gop = dotnet_restore_cache.getOrPut(b.allocator, b) catch @panic("OOM");
-    if (!gop.found_existing) gop.value_ptr.* = addDotnetToolRestoreStep(b);
+fn cachedRun(
+    b: *std.Build,
+    key: []const u8,
+    context: anytype,
+    create: fn (*std.Build, @TypeOf(context)) *std.Build.Step.Run,
+) *std.Build.Step.Run {
+    const full_key = b.fmt("{x}:{s}", .{ @intFromPtr(b), key });
+    const gop = step_cache.getOrPut(b.allocator, full_key) catch @panic("OOM");
+    if (!gop.found_existing) gop.value_ptr.* = create(b, context);
     return gop.value_ptr.*;
 }
 
-fn trimVelopackLibTool(own: *std.Build) *std.Build.Step.Compile {
-    if (trim_velopack_tool) |t| return t;
+fn hostTool(own: *std.Build, cache: *?*std.Build.Step.Compile, name: []const u8, src: []const u8) *std.Build.Step.Compile {
+    if (cache.*) |t| return t;
     const t = own.addExecutable(.{
-        .name = "trim-velopack-lib",
+        .name = name,
         .root_module = own.createModule(.{
-            .root_source_file = own.path("tools/trim_velopack_lib.zig"),
+            .root_source_file = own.path(src),
             .target = own.graph.host,
             .optimize = .Debug,
         }),
     });
-    trim_velopack_tool = t;
+    cache.* = t;
     return t;
 }
 
@@ -84,13 +96,29 @@ pub const LinkVelopackOptions = struct {
     /// Target the consumer is building for.
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    /// Take care of MSVC + the Windows SDK for `*-windows-msvc` targets:
+    /// resolve a Zig `--libc` manifest, install the toolchain when there isn't
+    /// one, and apply the manifest to `compile` and every `*-windows-msvc`
+    /// compile it links (SDL, FreeType, … need the same UCRT headers).
+    ///
+    /// No effect on other targets. Set to false to do all of that yourself
+    /// with `resolveWindowsMsvcLibc` / `addMsvcupSetupStep` /
+    /// `applyWindowsMsvcLibcRecursive`.
+    handle_libc: bool = true,
+    /// Zig `--libc` manifest to use for `*-windows-msvc`, overriding both the
+    /// command line `--libc` and the managed toolchain. Only read when
+    /// `handle_libc` is set.
+    windows_msvc_libc: ?[]const u8 = null,
+    /// Directory, relative to the consumer's build root, holding the managed
+    /// MSVC + Windows SDK tree and its generated `zig-libc-*.ini`.
+    msvc_dir: []const u8 = ".velopack-msvc",
 };
 
 pub fn linkVelopack(
     b: *std.Build,
     compile: *std.Build.Step.Compile,
     opts: LinkVelopackOptions,
-) !void {
+) void {
     const own = ownBuilder(b);
     const velopack_dep = own.dependency("velopack", .{});
     const target = opts.target;
@@ -123,7 +151,7 @@ pub fn linkVelopack(
         // trim it in place using `zig ar` (Zig's bundled LLVM archiver).
         const wf = b.addWriteFiles();
         const lib_copy = wf.addCopyFile(lib_src, lib_name);
-        const trim = b.addRunArtifact(trimVelopackLibTool(own));
+        const trim = b.addRunArtifact(hostTool(own, &trim_velopack_tool, "trim-velopack-lib", "tools/trim_velopack_lib.zig"));
         trim.addArg(b.graph.zig_exe);
         trim.addFileArg(lib_copy);
         trim.step.dependOn(&wf.step);
@@ -134,9 +162,11 @@ pub fn linkVelopack(
     }
 
     if (target.result.os.tag == .windows) {
-        // Velopack's Rust core (ureq, getrandom, TLS) needs Winsock + BCrypt.
+        // Velopack's Rust core (ureq, getrandom, TLS) needs Winsock, BCrypt and
+        // advapi32's SystemFunction036 (RtlGenRandom).
         compile.root_module.linkSystemLibrary("ws2_32", .{});
         compile.root_module.linkSystemLibrary("bcrypt", .{});
+        compile.root_module.linkSystemLibrary("advapi32", .{});
     }
     switch (target.result.os.tag) {
         .linux => {
@@ -150,11 +180,267 @@ pub fn linkVelopack(
         else => {},
     }
 
-    // Velopack's `vpk` is a .NET tool pinned via .config/dotnet-tools.json;
-    // packaging fails on a fresh checkout / CI runner without `dotnet tool
-    // restore`. Attach a cached, idempotent restore Run to the compile so
-    // consumers don't have to wire it themselves. Cheap when already restored.
-    compile.step.dependOn(&cachedDotnetToolRestore(b).step);
+    if (opts.handle_libc) handleWindowsMsvcLibc(b, compile, opts);
+}
+
+/// Resolve a `--libc` manifest for `*-windows-msvc`, installing MSVC + the
+/// Windows SDK when the host has nothing usable, and apply it to every
+/// `*-windows-msvc` compile reachable from `compile`.
+///
+/// Resolution order:
+///   1. `opts.windows_msvc_libc`
+///   2. the build's own `--libc` (which we then scope to the msvc compiles
+///      instead of leaving it on every host-side tool compile too)
+///   3. `<build_root>/<msvc_dir>/zig-libc-{x64,arm64}.ini` if it exists
+///   4. nothing on a Windows host — Zig auto-detects an installed Visual Studio
+///   5. otherwise install the toolchain first (`addMsvcupSetupStep`)
+fn handleWindowsMsvcLibc(b: *std.Build, compile: *std.Build.Step.Compile, opts: LinkVelopackOptions) void {
+    const target = opts.target;
+    if (target.result.os.tag != .windows or target.result.abi != .msvc) return;
+
+    var needs_setup = false;
+    const ini: []const u8 = blk: {
+        if (opts.windows_msvc_libc orelse b.libc_file) |p| {
+            break :blk if (std.fs.path.isAbsolute(p)) b.dupePath(p) else b.pathFromRoot(p);
+        }
+        const rel = msvcLibcIniPath(b, target, opts.msvc_dir) orelse return;
+        if (fileExists(b, rel)) break :blk b.pathFromRoot(rel);
+        // A Windows host with Visual Studio installed already has everything
+        // Zig needs; don't download a second toolchain behind the user's back.
+        if (b.graph.host.result.os.tag == .windows) return;
+        needs_setup = true;
+        break :blk b.pathFromRoot(rel);
+    };
+
+    if (needs_setup) compile.step.dependOn(&addMsvcupSetupStep(b, opts.msvc_dir).step);
+
+    // `b.libc_file` is inherited by *every* compile, host-side build tools
+    // included, which breaks them. Scope the manifest to the msvc compiles.
+    b.libc_file = null;
+    applyWindowsMsvcLibcRecursive(b, &.{compile}, .{ .cwd_relative = ini });
+}
+
+fn msvcLibcIniPath(b: *std.Build, target: std.Build.ResolvedTarget, msvc_dir: []const u8) ?[]const u8 {
+    const arch_suffix: []const u8 = switch (target.result.cpu.arch) {
+        .x86_64 => "x64",
+        .aarch64 => "arm64",
+        else => return null,
+    };
+    return b.fmt("{s}/zig-libc-{s}.ini", .{ msvc_dir, arch_suffix });
+}
+
+fn fileExists(b: *std.Build, rel: []const u8) bool {
+    b.build_root.handle.access(rel, .{}) catch return false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// addVelopackStep / addVelopackedAppDir — run `vpk pack` over a staged app
+// directory. velopack-zig owns the whole invocation: provisioning the `vpk`
+// CLI, the `[win]`/`[osx]`/`[linux]` selector for cross-OS packaging, and
+// mksquashfs for Linux AppImages.
+// ---------------------------------------------------------------------------
+
+/// Which `vpk` release to install. The CLI stamps its own Update binaries into
+/// the bundle, so it should match the runtime `linkVelopack` links.
+pub const VpkVersion = union(enum) {
+    /// The release this package bundles (`velopack_version`). Default.
+    bundled,
+    /// Newest stable release on NuGet, resolved at install time.
+    latest,
+    /// An explicit NuGet version, e.g. `"1.2.0"`.
+    pinned: []const u8,
+
+    fn string(self: VpkVersion) ?[]const u8 {
+        return switch (self) {
+            .bundled => velopack_version,
+            .latest => null,
+            .pinned => |v| v,
+        };
+    }
+};
+
+pub const VelopackOptions = struct {
+    /// `--packId`: the app's unique Velopack id.
+    name: []const u8,
+    /// `--packVersion`: the release version, e.g. `"1.0.0"`.
+    version: []const u8,
+    /// `--packDir`: directory whose contents become the app payload. Everything
+    /// in it is shipped, so stage it (`b.addWriteFiles()`) rather than pointing
+    /// at a directory of build leftovers.
+    source_dir: std.Build.LazyPath,
+    /// Target the payload was built for. Decides the `vpk` platform selector
+    /// when packaging across operating systems, the default `--mainExe`
+    /// extension, and whether mksquashfs is needed.
+    target: std.Build.ResolvedTarget,
+    /// `--mainExe`: the executable inside `source_dir` that Velopack launches.
+    /// Defaults to `name`, plus `.exe` on Windows.
+    main_exe: ?[]const u8 = null,
+    /// `--packTitle`: human readable app name.
+    title: ?[]const u8 = null,
+    /// `--packAuthors`.
+    authors: ?[]const u8 = null,
+    /// `--icon`.
+    icon: ?std.Build.LazyPath = null,
+    /// `--channel`.
+    channel: ?[]const u8 = null,
+    /// `--delta`: `"None"`, `"BestSpeed"` or `"BestSize"`.
+    delta: []const u8 = "None",
+    /// Appended verbatim after every generated argument — signing identities,
+    /// notarization profiles, `--releaseNotes`, and anything else this wrapper
+    /// doesn't model.
+    extra_args: []const []const u8 = &.{},
+    /// Steps that must finish before `vpk pack` runs. `source_dir` already
+    /// pulls in whatever produced it; this is for work that touches the staged
+    /// payload without being its producer, such as stripping the binary.
+    depends_on: []const *std.Build.Step = &.{},
+
+    /// Gate on downloading the `vpk` CLI. Wire it to a build option (see the
+    /// README) so a plain `zig build` never reaches out to NuGet; when it is
+    /// false and `vpk_dir` has no matching `vpk`, packaging fails with
+    /// instructions instead.
+    install_vpk: bool = false,
+    /// Which `vpk` release the managed install should provide.
+    vpk_version: VpkVersion = .bundled,
+    /// Directory, relative to the consumer's build root, holding the managed
+    /// `vpk` install.
+    vpk_dir: []const u8 = ".velopack-tools",
+    /// Run this instead of the managed `vpk`, e.g. `&.{ "dotnet", "vpk" }` for
+    /// a repo-local `.config/dotnet-tools.json` (pair it with
+    /// `addDotnetToolRestoreStep`). Disables `install_vpk` entirely.
+    vpk_argv: ?[]const []const u8 = null,
+};
+
+pub const VelopackedAppDirOptions = struct {
+    name: []const u8,
+    version: []const u8,
+    source_dir: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    main_exe: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+    authors: ?[]const u8 = null,
+    icon: ?std.Build.LazyPath = null,
+    channel: ?[]const u8 = null,
+    delta: []const u8 = "None",
+    extra_args: []const []const u8 = &.{},
+    depends_on: []const *std.Build.Step = &.{},
+    install_vpk: bool = false,
+    vpk_version: VpkVersion = .bundled,
+    vpk_dir: []const u8 = ".velopack-tools",
+    vpk_argv: ?[]const []const u8 = null,
+
+    /// Where the release artifacts land, as in `b.addInstallDirectory`.
+    install_dir: std.Build.InstallDir = .prefix,
+    install_subdir: []const u8 = "",
+};
+
+/// Package `source_dir` with `vpk pack` and install the resulting release
+/// directory (setup executables, `.nupkg`, `RELEASES` feed, …) under
+/// `install_dir` / `install_subdir`, like `b.addInstallDirectory`.
+///
+/// This is the call most consumers want; make it a dependency of your own
+/// `package` step.
+pub fn addVelopackedAppDir(
+    b: *std.Build,
+    opts: VelopackedAppDirOptions,
+) *std.Build.Step.InstallDir {
+    var pack_opts: VelopackOptions = undefined;
+    inline for (@typeInfo(VelopackOptions).@"struct".fields) |field| {
+        @field(pack_opts, field.name) = @field(opts, field.name);
+    }
+
+    const run = addVelopackStep(b, pack_opts);
+    const install = b.addInstallDirectory(.{
+        .source_dir = outputDir(run),
+        .install_dir = opts.install_dir,
+        .install_subdir = opts.install_subdir,
+    });
+    // Default would be "install generated/", which says nothing in a summary.
+    install.step.name = b.fmt("install {s} velopack release", .{opts.name});
+    return install;
+}
+
+/// Lower-level `vpk pack` Run, for consumers who need to do something with the
+/// release directory other than install it. Pair it with `outputDir`.
+///
+/// Prefer `addVelopackedAppDir`: it is this plus the install step, and one call
+/// less to keep in sync with the options above.
+pub fn addVelopackStep(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run {
+    const target = opts.target;
+    const windows = target.result.os.tag == .windows;
+
+    const run = if (opts.vpk_argv) |argv| b.addSystemCommand(argv) else blk: {
+        const setup = cachedVpkSetup(b, opts);
+        const r = b.addSystemCommand(&.{vpkExePath(b, opts.vpk_dir)});
+        r.step.dependOn(&setup.step);
+        break :blk r;
+    };
+
+    // `vpk` infers the platform from the host, so packaging for another OS
+    // needs an explicit selector.
+    if (target.result.os.tag != b.graph.host.result.os.tag) {
+        run.addArg(switch (target.result.os.tag) {
+            .windows => "[win]",
+            .linux => "[linux]",
+            .macos => "[osx]",
+            else => @panic("velopack-zig: unsupported package OS"),
+        });
+    }
+
+    run.addArgs(&.{ "pack", "--packId", opts.name, "--packVersion", opts.version });
+    run.addArgs(&.{ "--mainExe", opts.main_exe orelse if (windows) b.fmt("{s}.exe", .{opts.name}) else opts.name });
+    run.addArgs(&.{ "--delta", opts.delta, "--yes" });
+    if (opts.title) |t| run.addArgs(&.{ "--packTitle", t });
+    if (opts.authors) |a| run.addArgs(&.{ "--packAuthors", a });
+    if (opts.channel) |c| run.addArgs(&.{ "--channel", c });
+    if (opts.icon) |icon| {
+        run.addArg("--icon");
+        run.addFileArg(icon);
+    }
+    run.addArg("--packDir");
+    run.addDirectoryArg(opts.source_dir);
+    run.addArg("--outputDir");
+    _ = run.addOutputDirectoryArg(b.fmt("{s}-velopack", .{opts.name}));
+    run.addArgs(opts.extra_args);
+    for (opts.depends_on) |dep| run.step.dependOn(dep);
+
+    // vpk targets an older .NET runtime than what is typically installed.
+    run.setEnvironmentVariable("DOTNET_ROLL_FORWARD", "Major");
+
+    attachMksquashfsToVpkRun(b, run, target);
+    return run;
+}
+
+/// The `--outputDir` a Run from `addVelopackStep` writes its release artifacts
+/// to.
+pub fn outputDir(run: *std.Build.Step.Run) std.Build.LazyPath {
+    for (run.argv.items) |arg| switch (arg) {
+        .output_directory => |out| return .{ .generated = .{ .file = &out.generated_file } },
+        else => {},
+    };
+    @panic("velopack-zig: Run has no output directory; was it made by addVelopackStep?");
+}
+
+fn vpkExePath(b: *std.Build, vpk_dir: []const u8) []const u8 {
+    const exe = if (b.graph.host.result.os.tag == .windows) "vpk.exe" else "vpk";
+    return b.pathFromRoot(b.pathJoin(&.{ vpk_dir, exe }));
+}
+
+fn cachedVpkSetup(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run {
+    const Ctx = struct { dir: []const u8, version: VpkVersion, install: bool };
+    const key = b.fmt("vpk:{s}:{s}:{}", .{ opts.vpk_dir, opts.vpk_version.string() orelse "latest", opts.install_vpk });
+    return cachedRun(b, key, Ctx{ .dir = opts.vpk_dir, .version = opts.vpk_version, .install = opts.install_vpk }, struct {
+        fn create(bb: *std.Build, ctx: Ctx) *std.Build.Step.Run {
+            const own = ownBuilder(bb);
+            const r = bb.addRunArtifact(hostTool(own, &vpk_setup_tool, "vpk-setup", "tools/vpk_setup.zig"));
+            r.addArg(bb.pathFromRoot(ctx.dir));
+            r.addArg(if (ctx.install) "1" else "0");
+            // TODO: when resolving `.latest`, refuse releases younger than five
+            // days so a broken vpk publish can't take builds down with it.
+            r.addArg(ctx.version.string() orelse "");
+            return r;
+        }
+    }.create);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,9 +455,6 @@ pub fn linkVelopack(
 //   2. The bundled squashfs-tools source is a **lazy dependency** that hasn't
 //      been fetched yet. Zig's build runner prints a "run with --fetch"
 //      hint on the first build; subsequent builds resolve normally.
-//
-// Wire the returned step as a dependency of your `vpk pack` Run, and pass
-// `bin_dir` to `Run.addPathDir(...)` so vpk picks up the bundled mksquashfs.
 // ---------------------------------------------------------------------------
 
 pub const MksquashfsBuild = struct {
@@ -188,7 +471,9 @@ pub const MksquashfsBuild = struct {
 /// build runner will then prompt the user to re-run with `--fetch`). Either
 /// way, callers can simply skip wiring `bin_dir` into the vpk Run and rely on
 /// a host `mksquashfs` if one is on `PATH`.
-pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
+///
+/// `addVelopackStep` already calls this; consumers rarely need it directly.
+pub fn buildMksquashfs(b: *std.Build) ?MksquashfsBuild {
     const own = ownBuilder(b);
     if (own.graph.host.result.os.tag == .windows)
         return null;
@@ -215,39 +500,43 @@ pub fn buildMksquashfs(b: *std.Build) !?MksquashfsBuild {
 /// AppImage. On Linux targets this builds mksquashfs (lazily — first build
 /// prompts the user to `--fetch`) and prepends its bin dir to the Run's PATH.
 ///
-/// Consumers should call this on every vpk Run; velopack-zig handles the
-/// target-os check internally so the consumer doesn't have to.
+/// `addVelopackStep` already calls this; consumers rarely need it directly.
 pub fn attachMksquashfsToVpkRun(
     b: *std.Build,
     run: *std.Build.Step.Run,
     target: std.Build.ResolvedTarget,
-) !void {
+) void {
     if (target.result.os.tag != .linux) return;
-    const built = (try buildMksquashfs(b)) orelse return;
+    const built = buildMksquashfs(b) orelse return;
     run.addPathDir(built.bin_dir);
     run.step.dependOn(built.step);
 }
 
 // ---------------------------------------------------------------------------
-// addMsvcupSetupStep — install MSVC + Windows SDK into a writable directory
-// and emit zig-libc-{x64,arm64}.ini, all from the bundled tools/setup-msvc.sh
-// (or .ps1 on Windows hosts).
+// Escape hatches. `linkVelopack(.handle_libc = true)` and `addVelopackStep`
+// drive all of these; they stay public for consumers doing something the
+// options above don't cover.
 // ---------------------------------------------------------------------------
 
-/// Returns the *Run for the platform-appropriate setup script. The consumer
-/// can wire it as a dependency of `b.step("msvcup-setup", ...)` or as a
-/// pre-step of compiles for *-windows-msvc cross-builds.
+/// Install MSVC + the Windows SDK into `<build_root>/<install_dir>` (or
+/// `.velopack-msvc` when null) via [msvcup](https://github.com/marler8997/msvcup)
+/// and emit Zig `--libc` manifests (`zig-libc-x64.ini`, `zig-libc-arm64.ini`).
 ///
-/// `install_dir` is the absolute or build-root-relative directory where the
-/// MSVC tree + zig-libc-*.ini will be written. Pass null to use
-/// `<build_root>/.velopack-msvc`.
+/// Cached per build root and directory, so exposing it as your own
+/// `msvcup-setup` step and letting `linkVelopack` depend on it yields one
+/// install, not two.
 pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.Step.Run {
+    const dir = install_dir orelse ".velopack-msvc";
+    return cachedRun(b, b.fmt("msvcup:{s}", .{dir}), dir, createMsvcupSetupStep);
+}
+
+fn createMsvcupSetupStep(b: *std.Build, install_dir: []const u8) *std.Build.Step.Run {
     const own = ownBuilder(b);
 
-    const resolved_install_dir: []const u8 = if (install_dir) |p|
-        if (std.fs.path.isAbsolute(p)) b.dupePath(p) else b.pathFromRoot(p)
+    const resolved_install_dir: []const u8 = if (std.fs.path.isAbsolute(install_dir))
+        b.dupePath(install_dir)
     else
-        b.pathFromRoot(".velopack-msvc");
+        b.pathFromRoot(install_dir);
 
     const env_path = own.path("tools/msvcup.env").getPath3(b, null).toString(b.allocator) catch |e|
         std.debug.panic("velopack-zig: resolve msvcup.env: {}", .{e});
@@ -258,17 +547,15 @@ pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.St
         .windows => blk: {
             const script_path = own.path("tools/setup-msvc.ps1").getPath3(b, null).toString(b.allocator) catch |e|
                 std.debug.panic("velopack-zig: resolve setup-msvc.ps1: {}", .{e});
-            const r = b.addSystemCommand(&.{
+            break :blk b.addSystemCommand(&.{
                 "powershell", "-NoProfile", "-ExecutionPolicy",   "Bypass",
                 "-File",      script_path,  resolved_install_dir,
             });
-            break :blk r;
         },
         else => blk: {
             const script_path = own.path("tools/setup-msvc.sh").getPath3(b, null).toString(b.allocator) catch |e|
                 std.debug.panic("velopack-zig: resolve setup-msvc.sh: {}", .{e});
-            const r = b.addSystemCommand(&.{ "bash", script_path, resolved_install_dir });
-            break :blk r;
+            break :blk b.addSystemCommand(&.{ "bash", script_path, resolved_install_dir });
         },
     };
     run.setEnvironmentVariable("VELOPACK_ZIG_ENV_FILE", env_path);
@@ -276,22 +563,6 @@ pub fn addMsvcupSetupStep(b: *std.Build, install_dir: ?[]const u8) *std.Build.St
     run.setEnvironmentVariable("VELOPACK_ZIG_ZIG", b.graph.zig_exe);
     return run;
 }
-
-// ---------------------------------------------------------------------------
-// resolveWindowsMsvcLibc — locate the right zig-libc-*.ini for *-windows-msvc.
-// Resolution order (host-agnostic — same behaviour on Windows and on
-// non-Windows hosts that cross-compile to *-windows-msvc):
-//   1. explicit_path (e.g. -Dwindows-msvc-libc=)
-//   2. <build_root>/<install_dir_name>/zig-libc-{x64,arm64}.ini if it exists
-//   3. when fetch_if_missing=true and the file is absent: returns the would-be
-//      path with .needs_setup = true; caller should attach msvcup-setup as a
-//      dep of compile.
-// Returns null when nothing is configured. On native Windows hosts that lets
-// Zig fall back to auto-detecting an installed Visual Studio (preferred when
-// the developer already has it). To force the msvcup-installed SDK on a
-// Windows host instead, run `msvcup-setup` once or pass -Dfetch-msvc — the
-// existence of <install_dir_name>/zig-libc-*.ini wins over auto-detect.
-// ---------------------------------------------------------------------------
 
 pub const ResolveWindowsMsvcLibcOptions = struct {
     explicit_path: ?[]const u8 = null,
@@ -304,6 +575,11 @@ pub const ResolvedWindowsMsvcLibc = struct {
     needs_setup: bool,
 };
 
+/// Locate the `zig-libc-*.ini` for a `*-windows-msvc` target without applying
+/// it: an explicit path wins, then an installed `<install_dir_name>` tree, then
+/// (when `fetch_if_missing`) the path `addMsvcupSetupStep` would write, flagged
+/// `needs_setup`. Null means "nothing configured" — on a Windows host that
+/// leaves Zig's Visual Studio auto-detect in play.
 pub fn resolveWindowsMsvcLibc(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -317,55 +593,18 @@ pub fn resolveWindowsMsvcLibc(
         return .{ .libc_path = abs, .needs_setup = false };
     }
 
-    const arch_suffix: []const u8 = switch (target.result.cpu.arch) {
-        .x86_64 => "x64",
-        .aarch64 => "arm64",
-        else => return .{ .libc_path = null, .needs_setup = false },
-    };
-    const rel = b.fmt("{s}/zig-libc-{s}.ini", .{ opts.install_dir_name, arch_suffix });
+    const rel = msvcLibcIniPath(b, target, opts.install_dir_name) orelse
+        return .{ .libc_path = null, .needs_setup = false };
 
-    const exists = blk: {
-        b.build_root.handle.access(rel, .{}) catch break :blk false;
-        break :blk true;
-    };
-
-    // Same behaviour on Windows and non-Windows hosts: an installed
-    // <install_dir_name>/ tree (or -Dfetch-msvc) wins; otherwise return null
-    // and let the caller decide (Zig auto-detect on Windows; explicit failure
-    // on non-Windows hosts that can't auto-detect).
-    if (exists) {
+    if (fileExists(b, rel))
         return .{ .libc_path = b.pathFromRoot(rel), .needs_setup = false };
-    }
-    if (opts.fetch_if_missing) {
+    if (opts.fetch_if_missing)
         return .{ .libc_path = b.pathFromRoot(rel), .needs_setup = true };
-    }
     return .{ .libc_path = null, .needs_setup = false };
 }
 
-// ---------------------------------------------------------------------------
-// addDotnetToolRestoreStep — `dotnet tool restore` in the consumer build root.
-// Velopack's `vpk` is shipped as a .NET tool; projects that pin it via a
-// repo-local `.config/dotnet-tools.json` need to run `dotnet tool restore`
-// before `dotnet vpk pack ...` will work. Wire this Run as a dependency of
-// your vpk Run (or of the first iteration of a packageall sequence) so a
-// fresh checkout / CI runner doesn't fail with "tool not found".
-// ---------------------------------------------------------------------------
-
-/// Returns a Run that executes `dotnet tool restore` in the consumer's build
-/// root. Idempotent and cheap when the tools are already restored.
-pub fn addDotnetToolRestoreStep(b: *std.Build) *std.Build.Step.Run {
-    const r = b.addSystemCommand(&.{ "dotnet", "tool", "restore" });
-    r.setCwd(b.path("."));
-    return r;
-}
-
-// ---------------------------------------------------------------------------
-// applyWindowsMsvcLibcRecursive — apply a zig-libc INI to every reachable
-// *-windows-msvc compile (exe + every static lib it links). Without this,
-// dependencies such as SDL/FreeType/tree-sitter don't see the same UCRT/MSVC
-// headers as the exe and fail to compile their C sources.
-// ---------------------------------------------------------------------------
-
+/// Apply a `--libc` manifest to every `*-windows-msvc` compile reachable from
+/// `roots`, so C dependencies see the same UCRT/MSVC headers as the executable.
 pub fn applyWindowsMsvcLibcRecursive(
     b: *std.Build,
     roots: []const *std.Build.Step.Compile,
@@ -384,4 +623,17 @@ pub fn applyWindowsMsvcLibcRecursive(
             }
         }
     }
+}
+
+/// `dotnet tool restore` in the consumer's build root, for projects that pin
+/// `vpk` in their own `.config/dotnet-tools.json` and pass
+/// `.vpk_argv = &.{ "dotnet", "vpk" }` instead of using the managed install.
+pub fn addDotnetToolRestoreStep(b: *std.Build) *std.Build.Step.Run {
+    return cachedRun(b, "dotnet-tool-restore", {}, struct {
+        fn create(bb: *std.Build, _: void) *std.Build.Step.Run {
+            const r = bb.addSystemCommand(&.{ "dotnet", "tool", "restore" });
+            r.setCwd(bb.path("."));
+            return r;
+        }
+    }.create);
 }
