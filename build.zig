@@ -1,30 +1,5 @@
-//! velopack-zig — Velopack packaging glue for Zig projects.
-//!
-//! Two calls cover the whole flow from a consumer's build.zig:
-//!
-//!   const velopack = @import("velopack_zig");
-//!
-//!   // 1. Link the Velopack runtime into your app. On *-windows-msvc this
-//!   //    also installs and wires up MSVC + the Windows SDK when needed.
-//!   velopack.linkVelopack(b, exe, .{ .target = target, .optimize = optimize });
-//!
-//!   // 2. Run `vpk pack` over a staged directory and install its output.
-//!   const packaged = velopack.addVelopackedAppDir(b, .{
-//!       .name = "myapp",
-//!       .version = "1.0.0",
-//!       .target = target,
-//!       .source_dir = staging.getDirectory(),
-//!       .install_dir = .prefix,
-//!       .install_subdir = "desktop",
-//!       .install_vpk = b.option(bool, "install-vpk", "Download the vpk CLI") orelse false,
-//!   });
-//!   b.step("package", "Build the release bundle").dependOn(&packaged.step);
-//!
-//! The package bundles the Velopack release zip, the `vpk` CLI provisioning and
-//! a Zig build of mksquashfs (upstream squashfs-tools + zlib), so consumers do
-//! not declare any of those themselves.
-//!
-//! Targets **Zig 0.15.2** on `main`.
+//! velopack-zig: Velopack packaging glue for Zig projects.
+//! See README.md
 
 const std = @import("std");
 const builtin = @import("builtin");

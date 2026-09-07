@@ -7,6 +7,10 @@ with zig where possible.
 Velopack's CLI is a .NET tool, so the [.NET SDK](https://dotnet.microsoft.com/download)
 must be installed to package.
 
+***WARNING: this project has been generally reviewed but outside of the README,
+small pieces of code and many large comments are AI generated and have not been
+rewritten yet so may be useless to read.***
+
 ## Add this package to your zig project
 
 ```zig fetch --save "git+https://github.com/graphl-tech/velopack-zig#main"```
