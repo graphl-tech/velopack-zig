@@ -100,6 +100,9 @@ pub fn linkVelopack(
 
     compile.root_module.addIncludePath(velopack_dep.path("include"));
 
+    if (target.result.os.tag == .windows and target.result.abi != .msvc)
+        @panic("velopack-zig: Velopack's Windows runtime is MSVC-only; build for *-windows-msvc");
+
     const lib_name = switch (target.result.os.tag) {
         .linux => switch (target.result.cpu.arch) {
             .x86_64 => "velopack_libc_linux_x64_gnu.a",
@@ -282,6 +285,11 @@ pub const VelopackOptions = struct {
     /// Steps that must finish before `vpk pack` runs. `source_dir` already
     /// pulls in whatever produced it; this is for work that touches the staged
     /// payload without being its producer, such as stripping the binary.
+    ///
+    /// FIXME: threading step ordering through an options struct is a sign this
+    /// wrapper is too coarse. A more fine-grained, idiomatic API would hand the
+    /// caller the pieces — staging, pack, install — and let them order their
+    /// own work against the steps directly.
     depends_on: []const *std.Build.Step = &.{},
 
     /// Gate on downloading the `vpk` CLI. Wire it to a build option (see the
@@ -301,24 +309,7 @@ pub const VelopackOptions = struct {
 };
 
 pub const VelopackedAppDirOptions = struct {
-    name: []const u8,
-    version: []const u8,
-    source_dir: std.Build.LazyPath,
-    target: std.Build.ResolvedTarget,
-    main_exe: ?[]const u8 = null,
-    title: ?[]const u8 = null,
-    authors: ?[]const u8 = null,
-    icon: ?std.Build.LazyPath = null,
-    channel: ?[]const u8 = null,
-    delta: []const u8 = "None",
-    extra_vpk_args: []const []const u8 = &.{},
-    extra_vpk_path_args: []const VpkPathArg = &.{},
-    depends_on: []const *std.Build.Step = &.{},
-    install_vpk: bool = false,
-    vpk_version: VpkVersion = .bundled,
-    vpk_dir: []const u8 = ".velopack-tools",
-    vpk_argv: ?[]const []const u8 = null,
-
+    pack_opts: VelopackOptions,
     /// Where the release artifacts land, as in `b.addInstallDirectory`.
     install_dir: std.Build.InstallDir = .prefix,
     install_subdir: []const u8 = "",
@@ -334,27 +325,21 @@ pub fn addVelopackedAppDir(
     b: *std.Build,
     opts: VelopackedAppDirOptions,
 ) *std.Build.Step.InstallDir {
-    var pack_opts: VelopackOptions = undefined;
-    inline for (@typeInfo(VelopackOptions).@"struct".fields) |field| {
-        @field(pack_opts, field.name) = @field(opts, field.name);
-    }
-
-    const run = addVelopackStep(b, pack_opts);
+    const run = addVelopackStep(b, opts.pack_opts);
     const install = b.addInstallDirectory(.{
         .source_dir = outputDir(run),
         .install_dir = opts.install_dir,
         .install_subdir = opts.install_subdir,
     });
     // Default would be "install generated/", which says nothing in a summary.
-    install.step.name = b.fmt("install {s} velopack release", .{opts.name});
+    install.step.name = b.fmt("install {s} velopack release", .{opts.pack_opts.name});
     return install;
 }
 
 /// Lower-level `vpk pack` Run, for consumers who need to do something with the
 /// release directory other than install it. Pair it with `outputDir`.
 ///
-/// Prefer `addVelopackedAppDir`: it is this plus the install step, and one call
-/// less to keep in sync with the options above.
+/// Prefer `addVelopackedAppDir`.
 pub fn addVelopackStep(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run {
     const target = opts.target;
     const windows = target.result.os.tag == .windows;

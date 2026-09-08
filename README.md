@@ -49,14 +49,16 @@ pub fn build(b: *std.Build) !void {
     _ = staging.addCopyFile(exe.getEmittedBin(), if (target.result.os.tag == .windows) "myapp.exe" else "myapp");
 
     const packaged = velopack.addVelopackedAppDir(b, .{
-        .name = "myapp",
-        .version = "1.0.0",
-        .target = target,
-        .source_dir = staging.getDirectory(),
-        .icon = b.path("art/icon.png"),
         .install_dir = .prefix,
         .install_subdir = "desktop",
-        .install_vpk = install_vpk,
+        .pack_opts = .{
+            .name = "myapp",
+            .version = "1.0.0",
+            .target = target,
+            .source_dir = staging.getDirectory(),
+            .icon = b.path("art/icon.png"),
+            .install_vpk = install_vpk,
+        },
     });
 
     b.step("package", "Build the release bundle").dependOn(&packaged.step);
@@ -73,9 +75,9 @@ Velopack's Windows prebuilt is **MSVC**. Use `x86_64-windows-msvc` or
 
 ## Customizing the `vpk` command
 
-`addVelopackedAppDir` models common `vpk pack` flags directly:
-(`--packId`), `version`, `main_exe`, `title`, `authors`, `icon`, `channel`,
-`delta`. Everything else goes through:
+`addVelopackedAppDir` takes the `vpk pack` options as `pack_opts`, which models
+common flags directly: `name` (`--packId`), `version`, `main_exe`, `title`,
+`authors`, `icon`, `channel`, `delta`. Everything else goes through:
 
 - `extra_vpk_args: []const []const u8`: appended verbatim, e.g.
   `&.{ "--exclude", ".*\\.pdb", "--noPortable" }`.

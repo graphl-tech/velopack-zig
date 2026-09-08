@@ -9,10 +9,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/sample"
 
-# mksquashfs (needed for Linux AppImages) is a lazy dependency, so fetch the
-# whole tree up front rather than have the first build quietly skip it.
-zig build --fetch=all
-
 zig build package -Dinstall-vpk=true
 
 out=zig-out/desktop
