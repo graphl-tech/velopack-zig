@@ -1,12 +1,20 @@
 name: package
 
 on:
+  # A PR already runs on `pull_request`; running on every branch push too just
+  # pays for the same check twice.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A new push supersedes the run before it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   package:
@@ -15,7 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest is macOS 26, whose SDK Zig 0.15.2 cannot link against —
+        # it fails while building its own build runner, before this package is
+        # reached. Unpin once we are on a Zig that supports it.
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v7
 
