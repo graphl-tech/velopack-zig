@@ -2,10 +2,19 @@
 //! SDK tree. Picks the highest-versioned subdirectory under each well-known
 //! folder so SDK / MSVC bumps don't require re-pinning.
 //!
+//! On a case-sensitive filesystem the installed SDK is also unusable as shipped
+//! (`Windows.h` vs `windows.h`, `kernel32.Lib` vs `kernel32.lib`); see
+//! `symlink-bad-cased-include-tree.zig`, which this runs once per install.
+//!
 //! Usage:  zig run gen_zig_libc_msvc.zig -- <install-root> <x64|arm64|x86> <out.ini>
 //!
 //! Pinned to Zig 0.15.2 std APIs.
 const std = @import("std");
+const case_aliases = @import("symlink-bad-cased-include-tree.zig");
+
+/// Dropped in the install root once the aliases exist, so the second
+/// architecture's run doesn't re-read the whole SDK.
+const case_alias_marker = ".zig-case-aliases";
 
 fn die(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print(fmt ++ "\n", args);
@@ -29,6 +38,11 @@ fn pickLatestSubdirName(alloc: std.mem.Allocator, parent: std.fs.Dir) ![]const u
         }
     }
     return best orelse error.Empty;
+}
+
+fn exists(dir: std.fs.Dir, sub_path: []const u8) bool {
+    dir.access(sub_path, .{}) catch return false;
+    return true;
 }
 
 pub fn main() !void {
@@ -57,6 +71,32 @@ pub fn main() !void {
     var msvc_root = try root.openDir("VC/Tools/MSVC", .{ .iterate = true });
     defer msvc_root.close();
     const msvc_ver = try pickLatestSubdirName(alloc, msvc_root);
+
+    if (case_aliases.host_needs_aliases and !exists(root, case_alias_marker)) {
+        std.debug.print("Normalizing SDK filename case (once per install)...\n", .{});
+        const sdk_include = try std.fs.path.join(alloc, &.{ "Windows Kits/10/Include", sdk_inc_ver });
+        const sdk_lib = try std.fs.path.join(alloc, &.{ "Windows Kits/10/Lib", sdk_lib_ver });
+        const msvc_include = try std.fs.path.join(alloc, &.{ "VC/Tools/MSVC", msvc_ver, "include" });
+        const msvc_lib = try std.fs.path.join(alloc, &.{ "VC/Tools/MSVC", msvc_ver, "lib" });
+        try case_aliases.apply(alloc, root, .{
+            .lowercase_trees = &.{ sdk_include, sdk_lib, msvc_include, msvc_lib },
+            .scan_trees = &.{ sdk_include, msvc_include },
+            .include_roots = &.{
+                try std.fs.path.join(alloc, &.{ sdk_include, "ucrt" }),
+                try std.fs.path.join(alloc, &.{ sdk_include, "um" }),
+                try std.fs.path.join(alloc, &.{ sdk_include, "shared" }),
+                try std.fs.path.join(alloc, &.{ sdk_include, "winrt" }),
+                try std.fs.path.join(alloc, &.{ sdk_include, "cppwinrt" }),
+                msvc_include,
+            },
+            .lib_root_parents = &.{
+                try std.fs.path.join(alloc, &.{ sdk_lib, "ucrt" }),
+                try std.fs.path.join(alloc, &.{ sdk_lib, "um" }),
+                msvc_lib,
+            },
+        });
+        (try root.createFile(case_alias_marker, .{})).close();
+    }
 
     const include_dir = try std.fs.path.join(alloc, &.{ install_root, "Windows Kits/10/Include", sdk_inc_ver, "ucrt" });
     const sys_include_dir = try std.fs.path.join(alloc, &.{ install_root, "VC/Tools/MSVC", msvc_ver, "include" });

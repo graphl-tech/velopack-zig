@@ -1,0 +1,10 @@
+.{
+    .name = .velopack_zig_sample,
+    .version = "1.0.0",
+    .fingerprint = 0x259d39aa5313eb7e,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .velopack_zig = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
