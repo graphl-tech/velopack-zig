@@ -300,7 +300,10 @@ pub const VelopackOptions = struct {
     /// Which `vpk` release the managed install should provide.
     vpk_version: VpkVersion = .bundled,
     /// Directory, relative to the consumer's build root, holding the managed
-    /// `vpk` install.
+    /// `vpk` installs. Each version gets its own subdirectory: the path to the
+    /// binary is an argument of the `vpk pack` Run, so scoping it by version is
+    /// what makes changing `vpk_version` re-pack instead of reusing the bundle
+    /// the previous version produced.
     vpk_dir: []const u8 = ".velopack-tools",
     /// Run this instead of the managed `vpk`, e.g. `&.{ "dotnet", "vpk" }` for
     /// a repo-local `.config/dotnet-tools.json` (pair it with
@@ -346,7 +349,7 @@ pub fn addVelopackStep(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run
 
     const run = if (opts.vpk_argv) |argv| b.addSystemCommand(argv) else blk: {
         const setup = cachedVpkSetup(b, opts);
-        const r = b.addSystemCommand(&.{vpkExePath(b, opts.vpk_dir)});
+        const r = b.addSystemCommand(&.{vpkExePath(b, opts.vpk_dir, opts.vpk_version)});
         r.step.dependOn(&setup.step);
         break :blk r;
     };
@@ -400,9 +403,18 @@ pub fn outputDir(run: *std.Build.Step.Run) std.Build.LazyPath {
     @panic("velopack-zig: Run has no output directory; was it made by addVelopackStep?");
 }
 
-fn vpkExePath(b: *std.Build, vpk_dir: []const u8) []const u8 {
+/// Managed installs live under `<vpk_dir>/<version>` so that the binary's path
+/// — which `vpk pack` takes as a plain argument, and which therefore lands in
+/// the Run's cache key — changes whenever `vpk_version` does. Swapping the
+/// binary under a fixed path would leave the key untouched and silently reuse
+/// the previous version's bundle.
+fn vpkInstallDir(b: *std.Build, vpk_dir: []const u8, version: VpkVersion) []const u8 {
+    return b.pathFromRoot(b.pathJoin(&.{ vpk_dir, version.string() orelse "latest" }));
+}
+
+fn vpkExePath(b: *std.Build, vpk_dir: []const u8, version: VpkVersion) []const u8 {
     const exe = if (b.graph.host.result.os.tag == .windows) "vpk.exe" else "vpk";
-    return b.pathFromRoot(b.pathJoin(&.{ vpk_dir, exe }));
+    return b.pathJoin(&.{ vpkInstallDir(b, vpk_dir, version), exe });
 }
 
 fn cachedVpkSetup(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run {
@@ -412,7 +424,7 @@ fn cachedVpkSetup(b: *std.Build, opts: VelopackOptions) *std.Build.Step.Run {
         fn create(bb: *std.Build, ctx: Ctx) *std.Build.Step.Run {
             const own = ownBuilder(bb);
             const r = bb.addRunArtifact(hostTool(own, &vpk_setup_tool, "vpk-setup", "tools/vpk_setup.zig"));
-            r.addArg(bb.pathFromRoot(ctx.dir));
+            r.addArg(vpkInstallDir(bb, ctx.dir, ctx.version));
             r.addArg(if (ctx.install) "1" else "0");
             // TODO: when resolving `.latest`, refuse releases younger than five
             // days so a broken vpk publish can't take builds down with it.
