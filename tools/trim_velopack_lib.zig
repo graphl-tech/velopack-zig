@@ -42,30 +42,35 @@ pub fn main() !void {
         else => return error.ListFailed,
     }
 
-    // Delete the first matching `compiler_builtins-*` member. Velopack's
-    // archives only contain one such member; we mirror the original tool's
-    // behaviour of returning after the first delete.
+    // Delete every `compiler_builtins-*` member. The x64/x86 archives hold a
+    // single one, arm64 holds a couple hundred codegen units.
+    var del_argv: std.ArrayList([]const u8) = .empty;
+    defer del_argv.deinit(gpa);
+    try del_argv.appendSlice(gpa, &.{ zig_exe, "ar", "--format=coff", "d", lib_path });
+
     var lines = std.mem.tokenizeAny(u8, listed.stdout, "\r\n");
     while (lines.next()) |line| {
         if (!std.mem.startsWith(u8, line, "compiler_builtins-")) continue;
-        const del_argv = [_][]const u8{ zig_exe, "ar", "--format=coff", "d", lib_path, line };
-        const del = try std.process.Child.run(.{
-            .allocator = gpa,
-            .argv = &del_argv,
-            .max_output_bytes = 1024 * 1024,
-        });
-        defer {
-            gpa.free(del.stdout);
-            gpa.free(del.stderr);
-        }
-        switch (del.term) {
-            .Exited => |c| if (c != 0) {
-                std.debug.print("trim-velopack-lib: `zig ar d {s}` failed (code {d})\nstderr: {s}\n", .{ line, c, del.stderr });
-                return error.DeleteFailed;
-            },
-            else => return error.DeleteFailed,
-        }
-        return;
+        try del_argv.append(gpa, line);
+    }
+    // Nothing to trim.
+    if (del_argv.items.len == 5) return;
+
+    const del = try std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = del_argv.items,
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer {
+        gpa.free(del.stdout);
+        gpa.free(del.stderr);
+    }
+    switch (del.term) {
+        .Exited => |c| if (c != 0) {
+            std.debug.print("trim-velopack-lib: `zig ar d` failed (code {d})\nstderr: {s}\n", .{ c, del.stderr });
+            return error.DeleteFailed;
+        },
+        else => return error.DeleteFailed,
     }
 }
 
