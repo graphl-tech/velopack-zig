@@ -7,15 +7,14 @@
 //! Uses `zig ar` (LLVM's archiver, bundled with the Zig toolchain) so no
 //! separate LLVM install is required.
 //!
-//! Pinned to Zig 0.15.2 std APIs.
+//! Pinned to Zig 0.16.0 std APIs.
 const std = @import("std");
 
-pub fn main() !void {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .{};
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
-    var args = try std.process.argsWithAllocator(gpa);
+    var args = try init.minimal.args.iterateAllocator(gpa);
     defer args.deinit();
 
     _ = args.next(); // skip exe name
@@ -25,17 +24,17 @@ pub fn main() !void {
 
     // List archive members via `zig ar t`.
     const list_argv = [_][]const u8{ zig_exe, "ar", "t", lib_path };
-    const listed = try std.process.Child.run(.{
-        .allocator = gpa,
+    const listed = try std.process.run(gpa, io, .{
         .argv = &list_argv,
-        .max_output_bytes = 32 * 1024 * 1024,
+        .stdout_limit = .limited(32 * 1024 * 1024),
+        .stderr_limit = .limited(32 * 1024 * 1024),
     });
     defer {
         gpa.free(listed.stdout);
         gpa.free(listed.stderr);
     }
     switch (listed.term) {
-        .Exited => |c| if (c != 0) {
+        .exited => |c| if (c != 0) {
             std.debug.print("trim-velopack-lib: `zig ar t` failed (code {d})\nstderr: {s}\n", .{ c, listed.stderr });
             return error.ListFailed;
         },
@@ -56,17 +55,17 @@ pub fn main() !void {
     // Nothing to trim.
     if (del_argv.items.len == 5) return;
 
-    const del = try std.process.Child.run(.{
-        .allocator = gpa,
+    const del = try std.process.run(gpa, io, .{
         .argv = del_argv.items,
-        .max_output_bytes = 1024 * 1024,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(1024 * 1024),
     });
     defer {
         gpa.free(del.stdout);
         gpa.free(del.stderr);
     }
     switch (del.term) {
-        .Exited => |c| if (c != 0) {
+        .exited => |c| if (c != 0) {
             std.debug.print("trim-velopack-lib: `zig ar d` failed (code {d})\nstderr: {s}\n", .{ c, del.stderr });
             return error.DeleteFailed;
         },

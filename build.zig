@@ -30,7 +30,7 @@ var vpk_setup_tool: ?*std.Build.Step.Compile = null;
 
 // Steps that must not be duplicated when several call sites ask for them.
 // Keyed by consumer builder plus whatever else makes them distinct.
-var step_cache: std.StringHashMapUnmanaged(*std.Build.Step.Run) = .{};
+var step_cache: std.StringHashMapUnmanaged(*std.Build.Step.Run) = .empty;
 
 fn cachedRun(
     b: *std.Build,
@@ -208,7 +208,7 @@ fn msvcLibcIniPath(b: *std.Build, target: std.Build.ResolvedTarget, msvc_dir: []
 }
 
 fn fileExists(b: *std.Build, rel: []const u8) bool {
-    b.build_root.handle.access(rel, .{}) catch return false;
+    b.build_root.handle.access(b.graph.io, rel, .{}) catch return false;
     return true;
 }
 

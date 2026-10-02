@@ -5,7 +5,7 @@
     // https://github.com/velopack/velopack/releases plus Zig-built mksquashfs
     // (squashfs-tools + zlib) for `vpk pack` on Linux.
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .fingerprint = 0x95d249841170b06d,
 
     .dependencies = .{
@@ -17,10 +17,11 @@
             .hash = "N-V-__8AAGLSaQX1RqiiyJ0wx1tREvLoiEyH-NHb0YTvjMzW",
         },
         // Zig build of mksquashfs (+ unsquashfs) from upstream squashfs-tools.
-        // Lazy — only fetched when buildMksquashfs() is called on a Linux host.
+        // Vendored from github.com/allyourcodebase/squashfs-tools@4ed6b23 with
+        // its build.zig updated for Zig 0.16; switch back to the url once
+        // upstream supports 0.16.
         .squashfs = .{
-            .url = "git+https://github.com/allyourcodebase/squashfs-tools?ref=main#4ed6b23f0ccd0c108ec88745e10a506f6030128f",
-            .hash = "squashfs-4.7.5-oYR59XkYAABk2d0xgAhBoMmnidQCk0wSoTK9OFrRZ9V9",
+            .path = "squashfs",
             .lazy = true,
         },
     },
