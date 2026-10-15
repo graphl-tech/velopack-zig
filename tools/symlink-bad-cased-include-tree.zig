@@ -46,7 +46,7 @@ const builtin = @import("builtin");
 
 /// Whether this pass is needed at all. Windows and (by default) macOS fold case
 /// in the filesystem, so the aliases would be pure noise there.
-pub const host_needs_aliases = builtin.os.tag != .windows and builtin.os.tag != .macos;
+pub const host_needs_aliases = builtin.target.os.tag != .windows and builtin.target.os.tag != .macos;
 
 /// Where the interesting directories live, relative to the tree root. Every
 /// path is optional: missing ones are skipped, so one layout can describe

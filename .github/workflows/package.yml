@@ -23,10 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is macOS 26, whose SDK Zig 0.15.2 cannot link against —
-        # it fails while building its own build runner, before this package is
-        # reached. Unpin once we are on a Zig that supports it.
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -34,11 +31,12 @@ jobs:
       # -Dinstall-vpk=true, but it needs an SDK to install it with.
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '9.0.x'
+          # vpk 1.2 targets .NET 10.
+          dotnet-version: '10.0.x'
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: ${{ matrix.os }}
 
       - run: ./test/package.sh
