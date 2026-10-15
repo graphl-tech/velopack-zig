@@ -5,21 +5,21 @@
     // https://github.com/velopack/velopack/releases plus Zig-built mksquashfs
     // (squashfs-tools + zlib) for `vpk pack` on Linux.
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0x95d249841170b06d,
 
     .dependencies = .{
-        // Prebuilt C-ABI archives for every supported triple. Same release
-        // pixi currently uses; bump in lockstep so both consumers see the
-        // same Velopack runtime version.
+        // Prebuilt C-ABI archives for every supported triple. The release
+        // `velopack_version` in build.zig names: `vpk` installs at the same
+        // version, so bump both together.
         .velopack = .{
-            .url = "https://github.com/velopack/velopack/releases/download/0.0.1589-ga2c5a97/velopack_libc_0.0.1589-ga2c5a97.zip",
-            .hash = "N-V-__8AAGLSaQX1RqiiyJ0wx1tREvLoiEyH-NHb0YTvjMzW",
+            .url = "https://github.com/velopack/velopack/releases/download/1.2.161/velopack_libc_1.2.161.zip",
+            .hash = "N-V-__8AAK4wKAbP2L62TlmTlu6t9PQ1qMVF5Gt_SaI9TwGd",
         },
         // Zig build of mksquashfs (+ unsquashfs) from upstream squashfs-tools.
         // Vendored from github.com/allyourcodebase/squashfs-tools@4ed6b23 with
-        // its build.zig updated for Zig 0.16; switch back to the url once
-        // upstream supports 0.16.
+        // its build.zig updated for Zig 0.17; switch back to the url once
+        // upstream supports it.
         .squashfs = .{
             .path = "squashfs",
             .lazy = true,

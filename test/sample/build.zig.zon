@@ -2,7 +2,7 @@
     .name = .velopack_zig_sample,
     .version = "1.0.0",
     .fingerprint = 0x259d39aa5313eb7e,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .velopack_zig = .{ .path = "../.." },
     },

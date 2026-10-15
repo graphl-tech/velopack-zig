@@ -1,7 +1,5 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("Velopack.h");
-});
+const c = @import("velopack_c");
 
 pub fn main() void {
     // Handles Velopack's install/update hooks. A no-op outside an install, so
