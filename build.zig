@@ -224,10 +224,23 @@ fn msvcLibcIniPath(b: *std.Build, target: std.Build.ResolvedTarget, msvc_dir: []
     return b.fmt("{s}/zig-libc-{s}.ini", .{ msvc_dir, arch_suffix });
 }
 
+/// Whether `rel` (under the build root) exists, read while configuring and declared to the
+/// configure cache, so the build reconfigures when it appears or goes.
 fn fileExists(b: *std.Build, rel: []const u8) bool {
-    // Read while configuring: declared, so the build reconfigures when it appears or goes.
+    b.root.access(b.graph.io, rel, .{}) catch {
+        // Declared on the nearest directory that exists: Zig 0.17's maker cannot load a
+        // configuration that depends on a path inside a missing directory (FileSystemFailure).
+        // Making the file changes that directory, so the build still reconfigures.
+        var dir = std.fs.path.dirname(rel);
+        while (dir) |d| : (dir = std.fs.path.dirname(d)) {
+            b.root.access(b.graph.io, d, .{}) catch continue;
+            b.dependOnDirectoryMetadata(b.path(d));
+            return false;
+        }
+        b.dependOnDirectoryMetadata(b.path("."));
+        return false;
+    };
     b.dependOnFileMetadata(b.path(rel));
-    b.root.access(b.graph.io, rel, .{}) catch return false;
     return true;
 }
 
