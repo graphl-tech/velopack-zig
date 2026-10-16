@@ -128,7 +128,8 @@ pub fn main(init: std.process.Init) !void {
         \\crt_dir={s}
         \\msvc_lib_dir={s}
         \\kernel32_lib_dir={s}
-        \\gcc_dir=
+        \\cc_dir=
+        \\darwin_sdk_dir=
         \\
     , .{
         include_dir,
