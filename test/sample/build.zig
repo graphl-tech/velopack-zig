@@ -19,9 +19,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
-    exe.linkLibC();
 
     velopack.linkVelopack(b, exe, .{ .target = target, .optimize = optimize });
 

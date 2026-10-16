@@ -17,7 +17,7 @@ rewritten yet so may be useless to read.***
 
 ## Zig version
 
-**`main` targets Zig 0.15.2** (`build.zig.zon` `minimum_zig_version`). 
+**`main` targets Zig 0.17.0** (`build.zig.zon` `minimum_zig_version`). 
 
 ## Usage
 

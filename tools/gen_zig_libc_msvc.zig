@@ -8,7 +8,7 @@
 //!
 //! Usage:  zig run gen_zig_libc_msvc.zig -- <install-root> <x64|arm64|x86> <out.ini>
 //!
-//! Pinned to Zig 0.15.2 std APIs.
+//! Pinned to Zig 0.16.0 std APIs.
 const std = @import("std");
 const case_aliases = @import("symlink-bad-cased-include-tree.zig");
 
@@ -21,10 +21,10 @@ fn die(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-fn pickLatestSubdirName(alloc: std.mem.Allocator, parent: std.fs.Dir) ![]const u8 {
+fn pickLatestSubdirName(alloc: std.mem.Allocator, io: std.Io, parent: std.Io.Dir) ![]const u8 {
     var best: ?[]const u8 = null;
     var it = parent.iterate();
-    while (try it.next()) |e| {
+    while (try it.next(io)) |e| {
         if (e.kind != .directory) continue;
         const n = e.name;
         if (std.mem.eql(u8, n, ".") or std.mem.eql(u8, n, "..")) continue;
@@ -40,45 +40,44 @@ fn pickLatestSubdirName(alloc: std.mem.Allocator, parent: std.fs.Dir) ![]const u
     return best orelse error.Empty;
 }
 
-fn exists(dir: std.fs.Dir, sub_path: []const u8) bool {
-    dir.access(sub_path, .{}) catch return false;
+fn exists(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) bool {
+    dir.access(io, sub_path, .{}) catch return false;
     return true;
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    const io = init.io;
 
-    var args = try std.process.argsWithAllocator(alloc);
+    var args = try init.minimal.args.iterateAllocator(alloc);
     defer args.deinit();
     _ = args.next(); // exe
     const install_root = args.next() orelse die("usage: gen_zig_libc_msvc <install-root> <x64|arm64|x86> <out.ini>", .{});
     const arch = args.next() orelse die("usage: gen_zig_libc_msvc <install-root> <x64|arm64|x86> <out.ini>", .{});
     const out_path = args.next() orelse die("usage: gen_zig_libc_msvc <install-root> <x64|arm64|x86> <out.ini>", .{});
 
-    var root = try std.fs.openDirAbsolute(install_root, .{});
-    defer root.close();
+    var root = try std.Io.Dir.openDirAbsolute(io, install_root, .{});
+    defer root.close(io);
 
-    var inc_dir = try root.openDir("Windows Kits/10/Include", .{ .iterate = true });
-    defer inc_dir.close();
-    const sdk_inc_ver = try pickLatestSubdirName(alloc, inc_dir);
+    var inc_dir = try root.openDir(io, "Windows Kits/10/Include", .{ .iterate = true });
+    defer inc_dir.close(io);
+    const sdk_inc_ver = try pickLatestSubdirName(alloc, io, inc_dir);
 
-    var lib_dir = try root.openDir("Windows Kits/10/Lib", .{ .iterate = true });
-    defer lib_dir.close();
-    const sdk_lib_ver = try pickLatestSubdirName(alloc, lib_dir);
+    var lib_dir = try root.openDir(io, "Windows Kits/10/Lib", .{ .iterate = true });
+    defer lib_dir.close(io);
+    const sdk_lib_ver = try pickLatestSubdirName(alloc, io, lib_dir);
 
-    var msvc_root = try root.openDir("VC/Tools/MSVC", .{ .iterate = true });
-    defer msvc_root.close();
-    const msvc_ver = try pickLatestSubdirName(alloc, msvc_root);
+    var msvc_root = try root.openDir(io, "VC/Tools/MSVC", .{ .iterate = true });
+    defer msvc_root.close(io);
+    const msvc_ver = try pickLatestSubdirName(alloc, io, msvc_root);
 
-    if (case_aliases.host_needs_aliases and !exists(root, case_alias_marker)) {
+    if (case_aliases.host_needs_aliases and !exists(io, root, case_alias_marker)) {
         std.debug.print("Normalizing SDK filename case (once per install)...\n", .{});
         const sdk_include = try std.fs.path.join(alloc, &.{ "Windows Kits/10/Include", sdk_inc_ver });
         const sdk_lib = try std.fs.path.join(alloc, &.{ "Windows Kits/10/Lib", sdk_lib_ver });
         const msvc_include = try std.fs.path.join(alloc, &.{ "VC/Tools/MSVC", msvc_ver, "include" });
         const msvc_lib = try std.fs.path.join(alloc, &.{ "VC/Tools/MSVC", msvc_ver, "lib" });
-        try case_aliases.apply(alloc, root, .{
+        try case_aliases.apply(alloc, io, root, .{
             .lowercase_trees = &.{ sdk_include, sdk_lib, msvc_include, msvc_lib },
             .scan_trees = &.{ sdk_include, msvc_include },
             .include_roots = &.{
@@ -95,7 +94,7 @@ pub fn main() !void {
                 msvc_lib,
             },
         });
-        (try root.createFile(case_alias_marker, .{})).close();
+        (try root.createFile(io, case_alias_marker, .{})).close(io);
     }
 
     const include_dir = try std.fs.path.join(alloc, &.{ install_root, "Windows Kits/10/Include", sdk_inc_ver, "ucrt" });
@@ -114,14 +113,14 @@ pub fn main() !void {
         const dir_path = pair.@"0";
         const base = pair.@"1";
         const full = try std.fs.path.join(alloc, &.{ dir_path, base });
-        std.fs.accessAbsolute(full, .{}) catch |e| die("missing {s}: {}", .{ full, e });
+        std.Io.Dir.accessAbsolute(io, full, .{}) catch |e| die("missing {s}: {}", .{ full, e });
     }
 
     if (std.fs.path.dirname(out_path)) |dir| {
-        try std.fs.cwd().makePath(dir);
+        try std.Io.Dir.cwd().createDirPath(io, dir);
     }
-    const out_file = try std.fs.createFileAbsolute(out_path, .{});
-    defer out_file.close();
+    const out_file = try std.Io.Dir.createFileAbsolute(io, out_path, .{});
+    defer out_file.close(io);
 
     const contents = try std.fmt.allocPrint(alloc,
         \\include_dir={s}
@@ -129,7 +128,8 @@ pub fn main() !void {
         \\crt_dir={s}
         \\msvc_lib_dir={s}
         \\kernel32_lib_dir={s}
-        \\gcc_dir=
+        \\cc_dir=
+        \\darwin_sdk_dir=
         \\
     , .{
         include_dir,
@@ -138,5 +138,5 @@ pub fn main() !void {
         msvc_lib_dir,
         kernel32_lib_dir,
     });
-    try out_file.writeAll(contents);
+    try out_file.writeStreamingAll(io, contents);
 }

@@ -39,14 +39,14 @@
 //! against the tree above them, so `DriverSpecs.h` has to be matched inside
 //! `shared/` rather than as `shared/driverspecs.h` one level up.
 //!
-//! Pinned to Zig 0.15.2 std APIs.
+//! Pinned to Zig 0.16.0 std APIs.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 /// Whether this pass is needed at all. Windows and (by default) macOS fold case
 /// in the filesystem, so the aliases would be pure noise there.
-pub const host_needs_aliases = builtin.os.tag != .windows and builtin.os.tag != .macos;
+pub const host_needs_aliases = builtin.target.os.tag != .windows and builtin.target.os.tag != .macos;
 
 /// Where the interesting directories live, relative to the tree root. Every
 /// path is optional: missing ones are skipped, so one layout can describe
@@ -66,56 +66,56 @@ pub const Layout = struct {
 
 /// Symlink every spelling the tree uses onto the file that really exists.
 /// Allocations live for the whole pass; hand it an arena.
-pub fn apply(alloc: std.mem.Allocator, root: std.fs.Dir, layout: Layout) !void {
+pub fn apply(alloc: std.mem.Allocator, io: std.Io, root: std.Io.Dir, layout: Layout) !void {
     for (layout.lowercase_trees) |sub| {
-        var dir = openIter(root, sub) orelse continue;
-        defer dir.close();
-        try aliasLowercaseTree(alloc, dir);
+        var dir = openIter(io, root, sub) orelse continue;
+        defer dir.close(io);
+        try aliasLowercaseTree(alloc, io, dir);
     }
 
-    var includes: std.StringHashMapUnmanaged(void) = .{};
-    var libs: std.StringHashMapUnmanaged(void) = .{};
+    var includes: std.StringHashMapUnmanaged(void) = .empty;
+    var libs: std.StringHashMapUnmanaged(void) = .empty;
     for (layout.scan_trees) |sub| {
-        var dir = openIter(root, sub) orelse continue;
-        defer dir.close();
-        try scanTree(alloc, dir, &includes, &libs);
+        var dir = openIter(io, root, sub) orelse continue;
+        defer dir.close(io);
+        try scanTree(alloc, io, dir, &includes, &libs);
     }
 
     for (layout.include_roots) |sub| {
-        var dir = openIter(root, sub) orelse continue;
-        defer dir.close();
-        try aliasSpellingsIn(alloc, dir, includes);
+        var dir = openIter(io, root, sub) orelse continue;
+        defer dir.close(io);
+        try aliasSpellingsIn(alloc, io, dir, includes);
     }
 
     for (layout.lib_root_parents) |sub| {
-        var parent = openIter(root, sub) orelse continue;
-        defer parent.close();
+        var parent = openIter(io, root, sub) orelse continue;
+        defer parent.close(io);
         var it = parent.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(io)) |entry| {
             if (entry.kind != .directory) continue;
-            var dir = openIter(parent, entry.name) orelse continue;
-            defer dir.close();
-            try aliasSpellingsIn(alloc, dir, libs);
-            try aliasLibCaseVariants(alloc, dir);
+            var dir = openIter(io, parent, entry.name) orelse continue;
+            defer dir.close(io);
+            try aliasSpellingsIn(alloc, io, dir, libs);
+            try aliasLibCaseVariants(alloc, io, dir);
         }
     }
 }
 
-fn openIter(root: std.fs.Dir, sub_path: []const u8) ?std.fs.Dir {
-    return root.openDir(sub_path, .{ .iterate = true }) catch null;
+fn openIter(io: std.Io, root: std.Io.Dir, sub_path: []const u8) ?std.Io.Dir {
+    return root.openDir(io, sub_path, .{ .iterate = true }) catch null;
 }
 
 /// Maps the lowercased form of every real path under a directory to the real
 /// one, so a differently-cased spelling can be resolved back to its file.
 const CaseMap = struct {
     alloc: std.mem.Allocator,
-    entries: std.StringHashMapUnmanaged([]const u8) = .{},
+    entries: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    fn build(alloc: std.mem.Allocator, dir: std.fs.Dir) !CaseMap {
+    fn build(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !CaseMap {
         var self: CaseMap = .{ .alloc = alloc };
         var walker = try dir.walk(alloc);
         defer walker.deinit();
-        while (try walker.next()) |entry| {
+        while (try walker.next(io)) |entry| {
             // Skip symlinks: aliases from an earlier run, and following them
             // would walk the same subtree twice.
             if (entry.kind == .sym_link) continue;
@@ -136,7 +136,7 @@ const CaseMap = struct {
 
 /// Make `spelling` resolve to `real_rel` under `dir` by symlinking each path
 /// component that is spelled differently. Idempotent.
-fn aliasSpelling(alloc: std.mem.Allocator, dir: std.fs.Dir, real_rel: []const u8, spelling: []const u8) !void {
+fn aliasSpelling(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, real_rel: []const u8, spelling: []const u8) !void {
     var real_parts = std.mem.tokenizeScalar(u8, real_rel, '/');
     var spell_parts = std.mem.tokenizeScalar(u8, spelling, '/');
     var prefix: []const u8 = "";
@@ -147,7 +147,7 @@ fn aliasSpelling(alloc: std.mem.Allocator, dir: std.fs.Dir, real_rel: []const u8
                 spell_part
             else
                 try std.fs.path.join(alloc, &.{ prefix, spell_part });
-            dir.symLink(real_part, link, .{}) catch |err| switch (err) {
+            dir.symLink(io, real_part, link, .{}) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
@@ -163,10 +163,11 @@ fn aliasSpelling(alloc: std.mem.Allocator, dir: std.fs.Dir, real_rel: []const u8
 /// header / library search root.
 fn aliasSpellingsIn(
     alloc: std.mem.Allocator,
-    dir: std.fs.Dir,
+    io: std.Io,
+    dir: std.Io.Dir,
     spellings: std.StringHashMapUnmanaged(void),
 ) !void {
-    const map = try CaseMap.build(alloc, dir);
+    const map = try CaseMap.build(alloc, io, dir);
     var it = spellings.keyIterator();
     while (it.next()) |key| {
         const spelling = key.*;
@@ -176,18 +177,18 @@ fn aliasSpellingsIn(
         if (std.mem.indexOf(u8, normalized, "..") != null) continue;
         const real = (try map.realPath(normalized)) orelse continue;
         if (std.mem.eql(u8, real, normalized)) continue;
-        try aliasSpelling(alloc, dir, real, normalized);
+        try aliasSpelling(alloc, io, dir, real, normalized);
     }
 }
 
 /// Give every mixed-case entry under `dir` an all-lowercase alias — the
 /// spelling clang and lld-link reach for by default.
-fn aliasLowercaseTree(alloc: std.mem.Allocator, dir: std.fs.Dir) !void {
+fn aliasLowercaseTree(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !void {
     const Entry = struct { name: []const u8, is_dir: bool };
     var entries: std.ArrayList(Entry) = .empty;
 
     var it = dir.iterate();
-    while (try it.next()) |e| {
+    while (try it.next(io)) |e| {
         if (e.kind == .sym_link) continue;
         try entries.append(alloc, .{
             .name = try alloc.dupe(u8, e.name),
@@ -198,15 +199,15 @@ fn aliasLowercaseTree(alloc: std.mem.Allocator, dir: std.fs.Dir) !void {
     for (entries.items) |e| {
         const lower = try std.ascii.allocLowerString(alloc, e.name);
         if (!std.mem.eql(u8, lower, e.name)) {
-            dir.symLink(e.name, lower, .{}) catch |err| switch (err) {
+            dir.symLink(io, e.name, lower, .{}) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
         }
         if (e.is_dir) {
-            var sub = try dir.openDir(e.name, .{ .iterate = true });
-            defer sub.close();
-            try aliasLowercaseTree(alloc, sub);
+            var sub = try dir.openDir(io, e.name, .{ .iterate = true });
+            defer sub.close(io);
+            try aliasLowercaseTree(alloc, io, sub);
         }
     }
 }
@@ -214,10 +215,10 @@ fn aliasLowercaseTree(alloc: std.mem.Allocator, dir: std.fs.Dir) !void {
 /// The guessed half: `/DEFAULTLIB:` directives live in binary object members,
 /// so no header scan can see them. Alias the spellings such a directive can
 /// plausibly hold.
-fn aliasLibCaseVariants(alloc: std.mem.Allocator, dir: std.fs.Dir) !void {
+fn aliasLibCaseVariants(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !void {
     var names: std.ArrayList([]const u8) = .empty;
     var it = dir.iterate();
-    while (try it.next()) |e| {
+    while (try it.next(io)) |e| {
         if (e.kind != .file) continue;
         try names.append(alloc, try alloc.dupe(u8, e.name));
     }
@@ -233,7 +234,7 @@ fn aliasLibCaseVariants(alloc: std.mem.Allocator, dir: std.fs.Dir) !void {
         };
         for (variants) |variant| {
             if (std.mem.eql(u8, variant, name)) continue;
-            dir.symLink(name, variant, .{}) catch |err| switch (err) {
+            dir.symLink(io, name, variant, .{}) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
             };
@@ -251,7 +252,8 @@ fn isHeader(name: []const u8) bool {
 /// Read every header under `dir` and gather the spellings it references.
 fn scanTree(
     alloc: std.mem.Allocator,
-    dir: std.fs.Dir,
+    io: std.Io,
+    dir: std.Io.Dir,
     includes: *std.StringHashMapUnmanaged(void),
     libs: *std.StringHashMapUnmanaged(void),
 ) !void {
@@ -262,9 +264,9 @@ fn scanTree(
 
     var walker = try dir.walk(alloc);
     defer walker.deinit();
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file or !isHeader(entry.basename)) continue;
-        const text = dir.readFileAlloc(scratch.allocator(), entry.path, 8 << 20) catch continue;
+        const text = dir.readFileAlloc(io, entry.path, scratch.allocator(), .limited(8 << 20)) catch continue;
         try scanQuoted(alloc, text, "#include", includes);
         try scanQuoted(alloc, text, "comment(lib", libs);
         _ = scratch.reset(.retain_capacity);
